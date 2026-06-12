@@ -68,10 +68,10 @@ function AdrDetail() {
       </div>
 
       <div className="mt-8 grid gap-6">
-        <Block title="Context" body={adr.context} />
-        <Block title="Decision" body={adr.decision} />
-        <Block title="Consequences" body={adr.consequences} />
-        <Block title="Alternatives considered" body={adr.alternatives} />
+        <Block title="Context" body={adr.context ?? ""} />
+        <Block title="Decision" body={adr.decision ?? ""} />
+        <Block title="Consequences" body={adr.consequences ?? ""} />
+        <Block title="Alternatives considered" body={adr.alternatives ?? ""} />
       </div>
 
       <section className="mt-10 grid md:grid-cols-2 gap-6">
