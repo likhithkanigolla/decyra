@@ -72,10 +72,23 @@ export const listProjects = createServerFn({ method: "GET" })
     const { supabase, isDatabaseLocal } = context;
 
     if (isDatabaseLocal) {
-      const result = await pgQuery(
-        "SELECT * FROM projects ORDER BY created_at DESC"
-      );
-      return result.rows;
+      const { userId } = context;
+      const isAdminRow = await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]);
+      const isAdmin = !!isAdminRow;
+
+      if (isAdmin) {
+        const result = await pgQuery("SELECT * FROM projects ORDER BY created_at DESC");
+        return result.rows;
+      } else {
+        const result = await pgQuery(
+          `SELECT p.* FROM projects p
+           JOIN project_members pm ON p.id = pm.project_id
+           WHERE pm.user_id = $1
+           ORDER BY p.created_at DESC`,
+          [userId]
+        );
+        return result.rows;
+      }
     }
 
     const { data, error } = await supabase
@@ -307,6 +320,11 @@ export const getProject = createServerFn({ method: "GET" })
         profiles: { full_name: m.full_name, email: m.email, avatar_url: m.avatar_url },
       }));
       const isAdmin = (rolesRow.rows ?? []).some((r: any) => r.role === "admin");
+
+      if (!isAdmin && !myMembershipRow) {
+        throw new Error("Unauthorized: You do not have access to this project.");
+      }
+
       return {
         project,
         members,
@@ -656,13 +674,20 @@ export const getAdr = createServerFn({ method: "GET" })
       const shapeWithProfiles = (rows: any[]) =>
         rows.map((r) => ({ ...r, profiles: { full_name: r.full_name, email: r.email } }));
 
+      const isAdmin = (adminRow.rows?.length ?? 0) > 0;
+      const myRole = roleRow.rows?.[0]?.role ?? null;
+
+      if (!isAdmin && !myRole) {
+        throw new Error("Unauthorized: You do not have access to this ADR's project.");
+      }
+
       return {
         adr: shaped,
         approvals: shapeWithProfiles(approvalsRow.rows ?? []),
         comments: shapeWithProfiles(commentsRow.rows ?? []),
         publishedVersions: shapeWithProfiles(versionsRow.rows ?? []),
-        isAdmin: (adminRow.rows?.length ?? 0) > 0,
-        myRole: roleRow.rows?.[0]?.role ?? null,
+        isAdmin,
+        myRole,
       };
     }
 
@@ -717,6 +742,44 @@ export const updateAdrStatus = createServerFn({ method: "POST" })
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
     const { supabase, isDatabaseLocal } = context;
+
+    if (data.status === "approved") {
+      if (isDatabaseLocal) {
+        const adminApproveRow = await pgOne(
+          `SELECT 1 FROM approvals a
+           JOIN user_roles ur ON ur.user_id = a.user_id
+           WHERE a.adr_id = $1 AND a.decision = 'approve' AND ur.role = 'admin'`,
+          [data.id]
+        );
+        if (!adminApproveRow) {
+          throw new Error("Final Root Admin Approval is mandatory before an ADR can be approved.");
+        }
+      } else {
+        const { data: approvals, error: appErr } = await supabase
+          .from("approvals")
+          .select("user_id")
+          .eq("adr_id", data.id)
+          .eq("decision", "approve");
+        if (appErr) throw new Error(appErr.message);
+
+        if (!approvals || approvals.length === 0) {
+          throw new Error("Final Root Admin Approval is mandatory before an ADR can be approved.");
+        }
+
+        const userIds = approvals.map(a => a.user_id);
+        const { data: roles, error: rolesErr } = await supabase
+          .from("user_roles")
+          .select("role")
+          .in("user_id", userIds)
+          .eq("role", "admin")
+          .limit(1);
+        
+        if (rolesErr) throw new Error(rolesErr.message);
+        if (!roles || roles.length === 0) {
+          throw new Error("Final Root Admin Approval is mandatory before an ADR can be approved.");
+        }
+      }
+    }
 
     if (isDatabaseLocal) {
       await pgQuery("UPDATE adrs SET status = $1 WHERE id = $2", [
@@ -815,15 +878,40 @@ export const dashboardStats = createServerFn({ method: "GET" })
     const { supabase, isDatabaseLocal } = context;
 
     if (isDatabaseLocal) {
-      const [adrsRow, projectsRow] = await Promise.all([
-        pgQuery(
-          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
-                  p.name AS proj_name, p.code AS proj_code
-           FROM adrs a JOIN projects p ON p.id = a.project_id
-           ORDER BY a.updated_at DESC LIMIT 20`
-        ),
-        pgQuery("SELECT id, name, code FROM projects"),
-      ]);
+      const { userId } = context;
+      const isAdminRow = await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]);
+      const isAdmin = !!isAdminRow;
+
+      let adrsRow, projectsRow;
+
+      if (isAdmin) {
+        [adrsRow, projectsRow] = await Promise.all([
+          pgQuery(
+            `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
+                    p.name AS proj_name, p.code AS proj_code
+             FROM adrs a JOIN projects p ON p.id = a.project_id
+             ORDER BY a.updated_at DESC LIMIT 20`
+          ),
+          pgQuery("SELECT id, name, code FROM projects"),
+        ]);
+      } else {
+        [adrsRow, projectsRow] = await Promise.all([
+          pgQuery(
+            `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
+                    p.name AS proj_name, p.code AS proj_code
+             FROM adrs a 
+             JOIN projects p ON p.id = a.project_id
+             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
+             ORDER BY a.updated_at DESC LIMIT 20`,
+             [userId]
+          ),
+          pgQuery(
+            `SELECT p.id, p.name, p.code FROM projects p
+             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1`,
+             [userId]
+          ),
+        ]);
+      }
 
       const adrs = (adrsRow.rows ?? []).map((a: any) => ({
         ...a,
@@ -1039,19 +1127,25 @@ export const updateAdr = createServerFn({ method: "POST" })
     const { supabase, userId, isDatabaseLocal } = context;
 
     if (isDatabaseLocal) {
-      // Check author or admin/project_admin
-      const adr = await pgOne<any>("SELECT author_id, project_id FROM adrs WHERE id = $1", [data.id]);
+      // Check project_member or admin
+      const adr = await pgOne<any>("SELECT status, project_id FROM adrs WHERE id = $1", [data.id]);
       if (!adr) throw new Error("ADR not found");
       const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'", [userId]));
-      const isProjectAdmin = !!(await pgOne("SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2 AND role='project_admin'", [userId, adr.project_id]));
-      const isAuthor = adr.author_id === userId;
-      if (!isAdmin && !isProjectAdmin && !isAuthor) throw new Error("Not authorized to edit this ADR");
+      const isProjectMember = !!(await pgOne("SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2", [userId, adr.project_id]));
+      if (!isAdmin && !isProjectMember) throw new Error("Not authorized to edit this ADR");
 
       const fields: string[] = [];
       const vals: any[] = [];
       let p = 1;
       const set = (col: string, val: any, cast = "") => {
-        if (val !== undefined) { fields.push(`${col} = $${p++}${cast}`); vals.push(typeof val === "object" ? JSON.stringify(val) : val); }
+        if (val !== undefined) { 
+          fields.push(`${col} = $${p++}${cast}`); 
+          if (cast === "::jsonb") {
+            vals.push(JSON.stringify(val));
+          } else {
+            vals.push(val);
+          }
+        }
       };
       set("title", data.title);
       set("tags", data.tags, "::text[]");
@@ -1062,6 +1156,12 @@ export const updateAdr = createServerFn({ method: "POST" })
       set("design_changes", data.design_changes, "::jsonb");
       set("major_impacts", data.major_impacts, "::jsonb");
       set("references_data", data.references_data, "::jsonb");
+      
+      if (adr.status === "published" || adr.status === "superseded") {
+        fields.push(`status = $${p++}`);
+        vals.push("draft");
+      }
+
       if (!fields.length) return { ok: true };
       vals.push(data.id);
       await pgQuery(`UPDATE adrs SET ${fields.join(", ")} WHERE id = $${p}`, vals);
@@ -1078,6 +1178,12 @@ export const updateAdr = createServerFn({ method: "POST" })
     if (data.design_changes !== undefined) updates.design_changes = data.design_changes;
     if (data.major_impacts !== undefined) updates.major_impacts = data.major_impacts;
     if (data.references_data !== undefined) updates.references_data = data.references_data;
+
+    const { data: adrInfo, error: fetchErr } = await supabase.from("adrs").select("status").eq("id", data.id).single();
+    if (fetchErr) throw new Error(fetchErr.message);
+    if (adrInfo.status === "published" || adrInfo.status === "superseded") {
+      updates.status = "draft";
+    }
 
     const { error } = await supabase.from("adrs").update(updates).eq("id", data.id);
     if (error) throw new Error(error.message);
@@ -1101,12 +1207,15 @@ export const searchAdrs = createServerFn({ method: "GET" })
     const like = `%${data.q.toLowerCase()}%`;
 
     if (isDatabaseLocal) {
+      const isAdminRow = await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]);
+      const isAdmin = !!isAdminRow;
+
       let sql = `
         SELECT a.id, a.full_id, a.title, a.status, a.tags, a.updated_at, a.project_id,
                p.name AS proj_name, p.code AS proj_code
         FROM adrs a
         JOIN projects p ON p.id = a.project_id
-        JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
+        ${!isAdmin ? `JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1` : ``}
         WHERE (
           lower(a.title) LIKE $2
           OR lower(a.context) LIKE $2
@@ -1299,6 +1408,83 @@ export const publishAdr = createServerFn({ method: "POST" })
     return { version: nextVersion, gitCommitHash, markdown };
   });
 
+// ─── findSimilarAdrs ──────────────────────────────────────────────────────────
+
+export const findSimilarAdrs = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z.object({
+      project_id: z.string().uuid(),
+      title: z.string(),
+      context: z.string(),
+    }).parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    // Extract keywords (longer than 4 chars)
+    const text = `${data.title} ${data.context}`.toLowerCase();
+    const words = Array.from(new Set(text.split(/\W+/).filter(w => w.length > 4))).slice(0, 5);
+    console.log("findSimilarAdrs text:", text.slice(0, 50));
+    console.log("findSimilarAdrs words:", words);
+    
+    if (words.length === 0) return [];
+
+    if (isDatabaseLocal) {
+      const isAdminRow = await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]);
+      const isAdmin = !!isAdminRow;
+
+      const params: any[] = [];
+      let sql = `
+        SELECT a.id, a.full_id, a.title
+        FROM adrs a
+        JOIN projects p ON p.id = a.project_id
+      `;
+
+      if (!isAdmin) {
+        params.push(userId);
+        sql += ` JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1 `;
+      }
+
+      const offset = params.length;
+      words.forEach(w => params.push(`%${w}%`));
+
+      const conditions = words.map((_, i) => `(lower(a.title) LIKE $${offset + i + 1} OR lower(a.context) LIKE $${offset + i + 1})`);
+      sql += ` WHERE (${conditions.join(" OR ")}) LIMIT 20`;
+
+      const result = await pgQuery(sql, params);
+      
+      const scored = (result.rows ?? []).map(r => {
+        const str = `${r.title} ${r.context}`.toLowerCase();
+        let score = 0;
+        words.forEach(w => { if (str.includes(w)) score++; });
+        return { ...r, score };
+      });
+      scored.sort((a, b) => b.score - a.score);
+      return scored.slice(0, 5).map(r => ({ id: r.id, full_id: r.full_id, title: r.title }));
+    }
+
+    // Supabase
+    const orCondition = words.map(w => `title.ilike.%${w}%,context.ilike.%${w}%`).join(",");
+    const { data: results, error } = await supabase
+      .from("adrs")
+      .select("id, full_id, title, context")
+      .or(orCondition)
+      .limit(20);
+      
+    if (error) throw new Error(error.message);
+    
+    const scored = (results ?? []).map(r => {
+      const str = `${r.title} ${r.context}`.toLowerCase();
+      let score = 0;
+      words.forEach(w => { if (str.includes(w)) score++; });
+      return { ...r, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 5).map(r => ({ id: r.id, full_id: r.full_id, title: r.title }));
+  });
+
 // ─── getProjectForGraph ───────────────────────────────────────────────────────
 
 export const getProjectForGraph = createServerFn({ method: "GET" })
@@ -1310,22 +1496,36 @@ export const getProjectForGraph = createServerFn({ method: "GET" })
 
     if (isDatabaseLocal) {
       const [adrsRow, relsRow] = await Promise.all([
-        pgQuery("SELECT id, full_id, title, status FROM adrs WHERE project_id = $1", [data.project_id]),
+        pgQuery(
+          `SELECT DISTINCT a.id, a.full_id, a.title, a.status 
+           FROM adrs a 
+           WHERE a.project_id = $1 
+              OR a.id IN (SELECT source_adr_id FROM adr_relationships r JOIN adrs ta ON ta.id = r.target_adr_id WHERE ta.project_id = $1)
+              OR a.id IN (SELECT target_adr_id FROM adr_relationships r JOIN adrs sa ON sa.id = r.source_adr_id WHERE sa.project_id = $1)`, 
+          [data.project_id]
+        ),
         pgQuery(
           `SELECT r.id, r.source_adr_id, r.target_adr_id, r.rel_type
            FROM adr_relationships r
-           JOIN adrs a ON a.id = r.source_adr_id
-           WHERE a.project_id = $1`,
+           WHERE r.source_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)
+              OR r.target_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)`,
           [data.project_id]
         ),
       ]);
       return { adrs: adrsRow.rows ?? [], relationships: relsRow.rows ?? [] };
     }
 
-    const [{ data: adrs }, { data: rels }] = await Promise.all([
-      supabase.from("adrs").select("id, full_id, title, status").eq("project_id", data.project_id),
-      supabase.from("adr_relationships").select("id, source_adr_id, target_adr_id, rel_type")
-        .in("source_adr_id", (await supabase.from("adrs").select("id").eq("project_id", data.project_id)).data?.map((a: any) => a.id) ?? []),
-    ]);
+    const { data: adrsInProject } = await supabase.from("adrs").select("id").eq("project_id", data.project_id);
+    const projectAdrIds = adrsInProject?.map((a: any) => a.id) ?? [];
+    if (projectAdrIds.length === 0) return { adrs: [], relationships: [] };
+
+    const { data: rels } = await supabase.from("adr_relationships").select("id, source_adr_id, target_adr_id, rel_type")
+      .or(`source_adr_id.in.(${projectAdrIds.join(',')}),target_adr_id.in.(${projectAdrIds.join(',')})`);
+      
+    const allAdrIds = new Set(projectAdrIds);
+    rels?.forEach((r: any) => { allAdrIds.add(r.source_adr_id); allAdrIds.add(r.target_adr_id); });
+
+    const { data: adrs } = await supabase.from("adrs").select("id, full_id, title, status").in("id", Array.from(allAdrIds));
+
     return { adrs: adrs ?? [], relationships: rels ?? [] };
   });
