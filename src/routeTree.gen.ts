@@ -13,13 +13,18 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedAppIndexRouteImport } from './routes/_authenticated/app.index'
+import { Route as AuthenticatedAppSearchRouteImport } from './routes/_authenticated/app.search'
+import { Route as AuthenticatedAppProfileRouteImport } from './routes/_authenticated/app.profile'
 import { Route as AuthenticatedAppAdminRouteImport } from './routes/_authenticated/app.admin'
 import { Route as AuthenticatedAppProjectsIndexRouteImport } from './routes/_authenticated/app.projects.index'
 import { Route as AuthenticatedAppAdrsIndexRouteImport } from './routes/_authenticated/app.adrs.index'
 import { Route as AuthenticatedAppProjectsNewRouteImport } from './routes/_authenticated/app.projects.new'
 import { Route as AuthenticatedAppProjectsProjectIdRouteImport } from './routes/_authenticated/app.projects.$projectId'
 import { Route as AuthenticatedAppAdrsAdrIdRouteImport } from './routes/_authenticated/app.adrs.$adrId'
-import { Route as AuthenticatedAppProjectsProjectIdAdrsNewRouteImport } from './routes/_authenticated/app.projects.$projectId.adrs.new'
+import { Route as AuthenticatedAppProjectsProjectIdGraphRouteImport } from './routes/_authenticated/app.projects.$projectId_.graph'
+import { Route as AuthenticatedAppProjectsProjectIdEditRouteImport } from './routes/_authenticated/app.projects.$projectId_.edit'
+import { Route as AuthenticatedAppAdrsAdrIdEditRouteImport } from './routes/_authenticated/app.adrs.$adrId_.edit'
+import { Route as AuthenticatedAppProjectsProjectIdAdrsNewRouteImport } from './routes/_authenticated/app.projects.$projectId_.adrs.new'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -38,6 +43,16 @@ const IndexRoute = IndexRouteImport.update({
 const AuthenticatedAppIndexRoute = AuthenticatedAppIndexRouteImport.update({
   id: '/app/',
   path: '/app/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAppSearchRoute = AuthenticatedAppSearchRouteImport.update({
+  id: '/app/search',
+  path: '/app/search',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAppProfileRoute = AuthenticatedAppProfileRouteImport.update({
+  id: '/app/profile',
+  path: '/app/profile',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedAppAdminRoute = AuthenticatedAppAdminRouteImport.update({
@@ -75,35 +90,63 @@ const AuthenticatedAppAdrsAdrIdRoute =
     path: '/app/adrs/$adrId',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedAppProjectsProjectIdGraphRoute =
+  AuthenticatedAppProjectsProjectIdGraphRouteImport.update({
+    id: '/app/projects/$projectId_/graph',
+    path: '/app/projects/$projectId/graph',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAppProjectsProjectIdEditRoute =
+  AuthenticatedAppProjectsProjectIdEditRouteImport.update({
+    id: '/app/projects/$projectId_/edit',
+    path: '/app/projects/$projectId/edit',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAppAdrsAdrIdEditRoute =
+  AuthenticatedAppAdrsAdrIdEditRouteImport.update({
+    id: '/app/adrs/$adrId_/edit',
+    path: '/app/adrs/$adrId/edit',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedAppProjectsProjectIdAdrsNewRoute =
   AuthenticatedAppProjectsProjectIdAdrsNewRouteImport.update({
-    id: '/adrs/new',
-    path: '/adrs/new',
-    getParentRoute: () => AuthenticatedAppProjectsProjectIdRoute,
+    id: '/app/projects/$projectId_/adrs/new',
+    path: '/app/projects/$projectId/adrs/new',
+    getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/app/admin': typeof AuthenticatedAppAdminRoute
+  '/app/profile': typeof AuthenticatedAppProfileRoute
+  '/app/search': typeof AuthenticatedAppSearchRoute
   '/app/': typeof AuthenticatedAppIndexRoute
   '/app/adrs/$adrId': typeof AuthenticatedAppAdrsAdrIdRoute
-  '/app/projects/$projectId': typeof AuthenticatedAppProjectsProjectIdRouteWithChildren
+  '/app/projects/$projectId': typeof AuthenticatedAppProjectsProjectIdRoute
   '/app/projects/new': typeof AuthenticatedAppProjectsNewRoute
   '/app/adrs/': typeof AuthenticatedAppAdrsIndexRoute
   '/app/projects/': typeof AuthenticatedAppProjectsIndexRoute
+  '/app/adrs/$adrId/edit': typeof AuthenticatedAppAdrsAdrIdEditRoute
+  '/app/projects/$projectId/edit': typeof AuthenticatedAppProjectsProjectIdEditRoute
+  '/app/projects/$projectId/graph': typeof AuthenticatedAppProjectsProjectIdGraphRoute
   '/app/projects/$projectId/adrs/new': typeof AuthenticatedAppProjectsProjectIdAdrsNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/app/admin': typeof AuthenticatedAppAdminRoute
+  '/app/profile': typeof AuthenticatedAppProfileRoute
+  '/app/search': typeof AuthenticatedAppSearchRoute
   '/app': typeof AuthenticatedAppIndexRoute
   '/app/adrs/$adrId': typeof AuthenticatedAppAdrsAdrIdRoute
-  '/app/projects/$projectId': typeof AuthenticatedAppProjectsProjectIdRouteWithChildren
+  '/app/projects/$projectId': typeof AuthenticatedAppProjectsProjectIdRoute
   '/app/projects/new': typeof AuthenticatedAppProjectsNewRoute
   '/app/adrs': typeof AuthenticatedAppAdrsIndexRoute
   '/app/projects': typeof AuthenticatedAppProjectsIndexRoute
+  '/app/adrs/$adrId/edit': typeof AuthenticatedAppAdrsAdrIdEditRoute
+  '/app/projects/$projectId/edit': typeof AuthenticatedAppProjectsProjectIdEditRoute
+  '/app/projects/$projectId/graph': typeof AuthenticatedAppProjectsProjectIdGraphRoute
   '/app/projects/$projectId/adrs/new': typeof AuthenticatedAppProjectsProjectIdAdrsNewRoute
 }
 export interface FileRoutesById {
@@ -112,13 +155,18 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
   '/_authenticated/app/admin': typeof AuthenticatedAppAdminRoute
+  '/_authenticated/app/profile': typeof AuthenticatedAppProfileRoute
+  '/_authenticated/app/search': typeof AuthenticatedAppSearchRoute
   '/_authenticated/app/': typeof AuthenticatedAppIndexRoute
   '/_authenticated/app/adrs/$adrId': typeof AuthenticatedAppAdrsAdrIdRoute
-  '/_authenticated/app/projects/$projectId': typeof AuthenticatedAppProjectsProjectIdRouteWithChildren
+  '/_authenticated/app/projects/$projectId': typeof AuthenticatedAppProjectsProjectIdRoute
   '/_authenticated/app/projects/new': typeof AuthenticatedAppProjectsNewRoute
   '/_authenticated/app/adrs/': typeof AuthenticatedAppAdrsIndexRoute
   '/_authenticated/app/projects/': typeof AuthenticatedAppProjectsIndexRoute
-  '/_authenticated/app/projects/$projectId/adrs/new': typeof AuthenticatedAppProjectsProjectIdAdrsNewRoute
+  '/_authenticated/app/adrs/$adrId_/edit': typeof AuthenticatedAppAdrsAdrIdEditRoute
+  '/_authenticated/app/projects/$projectId_/edit': typeof AuthenticatedAppProjectsProjectIdEditRoute
+  '/_authenticated/app/projects/$projectId_/graph': typeof AuthenticatedAppProjectsProjectIdGraphRoute
+  '/_authenticated/app/projects/$projectId_/adrs/new': typeof AuthenticatedAppProjectsProjectIdAdrsNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -126,24 +174,34 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/app/admin'
+    | '/app/profile'
+    | '/app/search'
     | '/app/'
     | '/app/adrs/$adrId'
     | '/app/projects/$projectId'
     | '/app/projects/new'
     | '/app/adrs/'
     | '/app/projects/'
+    | '/app/adrs/$adrId/edit'
+    | '/app/projects/$projectId/edit'
+    | '/app/projects/$projectId/graph'
     | '/app/projects/$projectId/adrs/new'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/auth'
     | '/app/admin'
+    | '/app/profile'
+    | '/app/search'
     | '/app'
     | '/app/adrs/$adrId'
     | '/app/projects/$projectId'
     | '/app/projects/new'
     | '/app/adrs'
     | '/app/projects'
+    | '/app/adrs/$adrId/edit'
+    | '/app/projects/$projectId/edit'
+    | '/app/projects/$projectId/graph'
     | '/app/projects/$projectId/adrs/new'
   id:
     | '__root__'
@@ -151,13 +209,18 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/auth'
     | '/_authenticated/app/admin'
+    | '/_authenticated/app/profile'
+    | '/_authenticated/app/search'
     | '/_authenticated/app/'
     | '/_authenticated/app/adrs/$adrId'
     | '/_authenticated/app/projects/$projectId'
     | '/_authenticated/app/projects/new'
     | '/_authenticated/app/adrs/'
     | '/_authenticated/app/projects/'
-    | '/_authenticated/app/projects/$projectId/adrs/new'
+    | '/_authenticated/app/adrs/$adrId_/edit'
+    | '/_authenticated/app/projects/$projectId_/edit'
+    | '/_authenticated/app/projects/$projectId_/graph'
+    | '/_authenticated/app/projects/$projectId_/adrs/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -194,6 +257,20 @@ declare module '@tanstack/react-router' {
       path: '/app'
       fullPath: '/app/'
       preLoaderRoute: typeof AuthenticatedAppIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/app/search': {
+      id: '/_authenticated/app/search'
+      path: '/app/search'
+      fullPath: '/app/search'
+      preLoaderRoute: typeof AuthenticatedAppSearchRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/app/profile': {
+      id: '/_authenticated/app/profile'
+      path: '/app/profile'
+      fullPath: '/app/profile'
+      preLoaderRoute: typeof AuthenticatedAppProfileRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/app/admin': {
@@ -238,50 +315,71 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAppAdrsAdrIdRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
-    '/_authenticated/app/projects/$projectId/adrs/new': {
-      id: '/_authenticated/app/projects/$projectId/adrs/new'
-      path: '/adrs/new'
+    '/_authenticated/app/projects/$projectId_/graph': {
+      id: '/_authenticated/app/projects/$projectId_/graph'
+      path: '/app/projects/$projectId/graph'
+      fullPath: '/app/projects/$projectId/graph'
+      preLoaderRoute: typeof AuthenticatedAppProjectsProjectIdGraphRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/app/projects/$projectId_/edit': {
+      id: '/_authenticated/app/projects/$projectId_/edit'
+      path: '/app/projects/$projectId/edit'
+      fullPath: '/app/projects/$projectId/edit'
+      preLoaderRoute: typeof AuthenticatedAppProjectsProjectIdEditRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/app/adrs/$adrId_/edit': {
+      id: '/_authenticated/app/adrs/$adrId_/edit'
+      path: '/app/adrs/$adrId/edit'
+      fullPath: '/app/adrs/$adrId/edit'
+      preLoaderRoute: typeof AuthenticatedAppAdrsAdrIdEditRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/app/projects/$projectId_/adrs/new': {
+      id: '/_authenticated/app/projects/$projectId_/adrs/new'
+      path: '/app/projects/$projectId/adrs/new'
       fullPath: '/app/projects/$projectId/adrs/new'
       preLoaderRoute: typeof AuthenticatedAppProjectsProjectIdAdrsNewRouteImport
-      parentRoute: typeof AuthenticatedAppProjectsProjectIdRoute
+      parentRoute: typeof AuthenticatedRouteRoute
     }
   }
 }
 
-interface AuthenticatedAppProjectsProjectIdRouteChildren {
-  AuthenticatedAppProjectsProjectIdAdrsNewRoute: typeof AuthenticatedAppProjectsProjectIdAdrsNewRoute
-}
-
-const AuthenticatedAppProjectsProjectIdRouteChildren: AuthenticatedAppProjectsProjectIdRouteChildren =
-  {
-    AuthenticatedAppProjectsProjectIdAdrsNewRoute:
-      AuthenticatedAppProjectsProjectIdAdrsNewRoute,
-  }
-
-const AuthenticatedAppProjectsProjectIdRouteWithChildren =
-  AuthenticatedAppProjectsProjectIdRoute._addFileChildren(
-    AuthenticatedAppProjectsProjectIdRouteChildren,
-  )
-
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedAppAdminRoute: typeof AuthenticatedAppAdminRoute
+  AuthenticatedAppProfileRoute: typeof AuthenticatedAppProfileRoute
+  AuthenticatedAppSearchRoute: typeof AuthenticatedAppSearchRoute
   AuthenticatedAppIndexRoute: typeof AuthenticatedAppIndexRoute
   AuthenticatedAppAdrsAdrIdRoute: typeof AuthenticatedAppAdrsAdrIdRoute
-  AuthenticatedAppProjectsProjectIdRoute: typeof AuthenticatedAppProjectsProjectIdRouteWithChildren
+  AuthenticatedAppProjectsProjectIdRoute: typeof AuthenticatedAppProjectsProjectIdRoute
   AuthenticatedAppProjectsNewRoute: typeof AuthenticatedAppProjectsNewRoute
   AuthenticatedAppAdrsIndexRoute: typeof AuthenticatedAppAdrsIndexRoute
   AuthenticatedAppProjectsIndexRoute: typeof AuthenticatedAppProjectsIndexRoute
+  AuthenticatedAppAdrsAdrIdEditRoute: typeof AuthenticatedAppAdrsAdrIdEditRoute
+  AuthenticatedAppProjectsProjectIdEditRoute: typeof AuthenticatedAppProjectsProjectIdEditRoute
+  AuthenticatedAppProjectsProjectIdGraphRoute: typeof AuthenticatedAppProjectsProjectIdGraphRoute
+  AuthenticatedAppProjectsProjectIdAdrsNewRoute: typeof AuthenticatedAppProjectsProjectIdAdrsNewRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAppAdminRoute: AuthenticatedAppAdminRoute,
+  AuthenticatedAppProfileRoute: AuthenticatedAppProfileRoute,
+  AuthenticatedAppSearchRoute: AuthenticatedAppSearchRoute,
   AuthenticatedAppIndexRoute: AuthenticatedAppIndexRoute,
   AuthenticatedAppAdrsAdrIdRoute: AuthenticatedAppAdrsAdrIdRoute,
   AuthenticatedAppProjectsProjectIdRoute:
-    AuthenticatedAppProjectsProjectIdRouteWithChildren,
+    AuthenticatedAppProjectsProjectIdRoute,
   AuthenticatedAppProjectsNewRoute: AuthenticatedAppProjectsNewRoute,
   AuthenticatedAppAdrsIndexRoute: AuthenticatedAppAdrsIndexRoute,
   AuthenticatedAppProjectsIndexRoute: AuthenticatedAppProjectsIndexRoute,
+  AuthenticatedAppAdrsAdrIdEditRoute: AuthenticatedAppAdrsAdrIdEditRoute,
+  AuthenticatedAppProjectsProjectIdEditRoute:
+    AuthenticatedAppProjectsProjectIdEditRoute,
+  AuthenticatedAppProjectsProjectIdGraphRoute:
+    AuthenticatedAppProjectsProjectIdGraphRoute,
+  AuthenticatedAppProjectsProjectIdAdrsNewRoute:
+    AuthenticatedAppProjectsProjectIdAdrsNewRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =
@@ -295,3 +393,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { getProject, listProfiles, addProjectMember, removeProjectMember } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
-import { Plus, Users, GitBranch, FolderOpen, Trash2 } from "lucide-react";
+import { Plus, Users, GitBranch, FolderOpen, Trash2, Pencil } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -33,10 +33,23 @@ function ProjectDetail() {
           <h1 className="mt-2 text-2xl font-semibold tracking-tight">{project.name}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{project.description || "No description."}</p>
         </div>
-        <button onClick={() => navigate({ to: "/app/projects/$projectId/adrs/new", params: { projectId } })}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">
-          <Plus className="h-4 w-4" /> New ADR
-        </button>
+        <div className="flex items-center gap-2">
+          <Link to="/app/projects/$projectId/graph" params={{ projectId }}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent">
+            <GitBranch className="h-4 w-4" /> Graph
+          </Link>
+          {canManage && (
+            <button onClick={() => navigate({ to: "/app/projects/$projectId/edit", params: { projectId } })}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent">
+              <Pencil className="h-4 w-4" /> Edit
+            </button>
+          )}
+          <button onClick={() => navigate({ to: "/app/projects/$projectId/adrs/new", params: { projectId } })}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">
+            <Plus className="h-4 w-4" /> New ADR
+          </button>
+        </div>
+
       </div>
 
       <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
@@ -134,31 +147,10 @@ function MembersPanel({ projectId, members, canManage, onChange }: { projectId: 
             </div>
             <div className="flex items-center gap-2">
               <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide">{m.role.replace("_", " ")}</span>
-              {canManage && (
-                <button onClick={() => remove(m.id)} className="rounded p-1 text-muted-foreground hover:bg-destructive/15 hover:text-destructive" title="Remove">
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              )}
             </div>
           </div>
         ))}
       </div>
-      {canManage && (
-        <div className="border-t border-border p-3 flex items-center gap-2">
-          <select value={pick.user_id} onChange={(e) => setPick({ ...pick, user_id: e.target.value })}
-            className="h-9 flex-1 rounded-md border border-input bg-background px-2 text-sm">
-            <option value="">Select a user…</option>
-            {available.map((p: any) => <option key={p.id} value={p.id}>{p.full_name ?? p.email}</option>)}
-          </select>
-          <select value={pick.role} onChange={(e) => setPick({ ...pick, role: e.target.value as any })}
-            className="h-9 rounded-md border border-input bg-background px-2 text-sm">
-            <option value="project_admin">Project admin</option>
-            <option value="engineer">Engineer</option>
-            <option value="intern">Intern</option>
-          </select>
-          <button onClick={add} className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">Add</button>
-        </div>
-      )}
     </div>
   );
 }

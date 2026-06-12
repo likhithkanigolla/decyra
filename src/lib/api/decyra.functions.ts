@@ -1,24 +1,84 @@
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { requireFlexibleAuth } from "@/integrations/supabase/auth-flexible";
+import type { FlexibleAuthContext } from "@/integrations/supabase/auth-flexible";
 import { z } from "zod";
+import { getDatabaseConfig } from "@/integrations/database/config";
+
+// Helper: cast middleware context to the correct type
+function ctx(raw: unknown): FlexibleAuthContext {
+  return raw as FlexibleAuthContext;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+async function pgQuery<T = any>(sql: string, params?: any[]) {
+  const { query } = await import("@/integrations/database/postgres");
+  return query<T>(sql, params);
+}
+
+async function pgOne<T = any>(sql: string, params?: any[]) {
+  const { queryOne } = await import("@/integrations/database/postgres");
+  return queryOne<T>(sql, params);
+}
+
+// ─── getMyContext ─────────────────────────────────────────────────────────────
 
 export const getMyContext = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .handler(async ({ context }) => {
-    const { supabase, userId } = context;
+  .middleware([requireFlexibleAuth])
+  .handler(async ({ context: rawCtx }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const [profileRow, rolesRow, membershipsRow] = await Promise.all([
+        pgOne("SELECT * FROM profiles WHERE id = $1", [userId]),
+        pgQuery("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
+        pgQuery(
+          `SELECT pm.role, pm.project_id,
+                  p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.description AS proj_desc
+           FROM project_members pm
+           JOIN projects p ON p.id = pm.project_id
+           WHERE pm.user_id = $1`,
+          [userId]
+        ),
+      ]);
+      const isAdmin = (rolesRow.rows ?? []).some((r: any) => r.role === "admin");
+      const memberships = (membershipsRow.rows ?? []).map((m: any) => ({
+        role: m.role,
+        project_id: m.project_id,
+        projects: { id: m.proj_id, name: m.proj_name, code: m.proj_code, description: m.proj_desc },
+      }));
+      return { userId, profile: profileRow, isAdmin, memberships };
+    }
+
     const [{ data: profile }, { data: roles }, { data: memberships }] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
       supabase.from("user_roles").select("role").eq("user_id", userId),
-      supabase.from("project_members").select("role, project_id, projects(id,name,code,description)").eq("user_id", userId),
+      supabase
+        .from("project_members")
+        .select("role, project_id, projects(id,name,code,description)")
+        .eq("user_id", userId),
     ]);
     const isAdmin = (roles ?? []).some((r: any) => r.role === "admin");
     return { userId, profile, isAdmin, memberships: memberships ?? [] };
   });
 
+// ─── listProjects ─────────────────────────────────────────────────────────────
+
 export const listProjects = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .handler(async ({ context }) => {
-    const { data, error } = await context.supabase
+  .middleware([requireFlexibleAuth])
+  .handler(async ({ context: rawCtx }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const result = await pgQuery(
+        "SELECT * FROM projects ORDER BY created_at DESC"
+      );
+      return result.rows;
+    }
+
+    const { data, error } = await supabase
       .from("projects")
       .select("*")
       .order("created_at", { ascending: false });
@@ -26,22 +86,66 @@ export const listProjects = createServerFn({ method: "GET" })
     return data;
   });
 
+// ─── createProject ────────────────────────────────────────────────────────────
+
 export const createProject = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) =>
-    z.object({
-      name: z.string().min(1).max(120),
-      code: z.string().min(2).max(16).regex(/^[A-Z0-9]+$/, "Use uppercase letters and digits"),
-      description: z.string().max(2000).optional(),
-      repo_url: z.string().url().optional().or(z.literal("")),
-      branch: z.string().max(120).optional(),
-      adr_path: z.string().max(255).optional(),
-    }).parse(d)
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        name: z.string().min(1).max(120),
+        code: z
+          .string()
+          .min(2)
+          .max(16)
+          .regex(/^[A-Z0-9]+$/, "Use uppercase letters and digits"),
+        description: z.string().optional(),
+        repo_url: z.string().optional(),
+        branch: z.string().optional(),
+        adr_path: z.string().optional(),
+        git_pat: z.string().nullable().optional(),
+      })
+      .parse(d)
   )
-  .handler(async ({ context, data }) => {
-    const { supabase, userId } = context;
-    // Only platform admins can create projects (also enforced by RLS)
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const roleRow = await pgOne<{ role: string }>(
+        "SELECT role FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+        [userId]
+      );
+      if (!roleRow) throw new Error("Only platform admins can create projects.");
+
+      const project = await pgOne<any>(
+        `INSERT INTO projects (name, code, description, repo_url, branch, adr_path, git_pat, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [
+          data.name,
+          data.code,
+          data.description ?? null,
+          data.repo_url || null,
+          data.branch || "main",
+          data.adr_path || "docs/adr",
+          data.git_pat || null,
+          userId,
+        ]
+      );
+      if (!project) throw new Error("Failed to create project");
+
+      await pgQuery(
+        `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'project_admin')`,
+        [project.id, userId]
+      );
+      return project;
+    }
+
+    const { data: roles } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId);
     if (!(roles ?? []).some((r: any) => r.role === "admin")) {
       throw new Error("Only platform admins can create projects.");
     }
@@ -54,12 +158,12 @@ export const createProject = createServerFn({ method: "POST" })
         repo_url: data.repo_url || null,
         branch: data.branch || "main",
         adr_path: data.adr_path || "docs/adr",
+        git_pat: data.git_pat || null,
         created_by: userId,
       })
       .select()
       .single();
     if (error) throw new Error(error.message);
-    // Creator becomes project_admin
     await supabase.from("project_members").insert({
       project_id: project.id,
       user_id: userId,
@@ -68,13 +172,155 @@ export const createProject = createServerFn({ method: "POST" })
     return project;
   });
 
-export const getProject = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
-  .handler(async ({ context, data }) => {
-    const { supabase, userId } = context;
+// ─── updateProject (NEW — fixes Issue 4) ─────────────────────────────────────
+
+export const updateProject = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        name: z.string().min(1).max(120),
+        description: z.string().max(2000).optional(),
+        repo_url: z.string().optional(),
+        branch: z.string().optional(),
+        adr_path: z.string().optional(),
+        git_pat: z.string().nullable().optional(),
+        required_approvals: z.number().int().min(1).max(20).optional(),
+      })
+      .parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const isAdmin = !!(await pgOne(
+        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+        [userId]
+      ));
+      const isProjectAdmin = !!(await pgOne(
+        "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
+        [userId, data.id]
+      ));
+      if (!isAdmin && !isProjectAdmin) {
+        throw new Error("Only admins or project admins can edit projects.");
+      }
+
+      const updated = await pgOne<any>(
+        `UPDATE projects SET
+           name = $1, description = $2, repo_url = $3,
+           branch = $4, adr_path = $5, git_pat = $6, required_approvals = COALESCE($7, required_approvals)
+         WHERE id = $8
+         RETURNING *`,
+        [
+          data.name,
+          data.description ?? null,
+          data.repo_url || null,
+          data.branch || "main",
+          data.adr_path || "docs/adr",
+          data.git_pat ?? null,
+          data.required_approvals ?? null,
+          data.id,
+        ]
+      );
+      if (!updated) throw new Error("Project not found");
+      return updated;
+    }
+
+    const { data: roles } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId);
+    const { data: membership } = await supabase
+      .from("project_members")
+      .select("role")
+      .eq("project_id", data.id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    const isAdmin = (roles ?? []).some((r: any) => r.role === "admin");
+    const isProjectAdmin = membership?.role === "project_admin";
+    if (!isAdmin && !isProjectAdmin) {
+      throw new Error("Only admins or project admins can edit projects.");
+    }
+
     const { data: project, error } = await supabase
-      .from("projects").select("*").eq("id", data.id).maybeSingle();
+      .from("projects")
+      .update({
+        name: data.name,
+        description: data.description ?? null,
+        repo_url: data.repo_url || null,
+        branch: data.branch || "main",
+        adr_path: data.adr_path || "docs/adr",
+        git_pat: data.git_pat ?? null,
+        ...(data.required_approvals !== undefined ? { required_approvals: data.required_approvals } : {}),
+      })
+      .eq("id", data.id)
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return project;
+  });
+
+// ─── getProject ───────────────────────────────────────────────────────────────
+
+export const getProject = createServerFn({ method: "GET" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const project = await pgOne<any>(
+        "SELECT * FROM projects WHERE id = $1",
+        [data.id]
+      );
+      if (!project) throw new Error("Project not found");
+
+      const [membersRow, adrsRow, myMembershipRow, rolesRow] = await Promise.all([
+        pgQuery(
+          `SELECT pm.id, pm.role, pm.user_id,
+                  pr.full_name, pr.email, pr.avatar_url
+           FROM project_members pm
+           LEFT JOIN profiles pr ON pr.id = pm.user_id
+           WHERE pm.project_id = $1`,
+          [data.id]
+        ),
+        pgQuery(
+          `SELECT id, full_id, title, status, tags, updated_at, author_id
+           FROM adrs WHERE project_id = $1
+           ORDER BY adr_number DESC`,
+          [data.id]
+        ),
+        pgOne<{ role: string }>(
+          "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2",
+          [data.id, userId]
+        ),
+        pgQuery("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
+      ]);
+
+      const members = (membersRow.rows ?? []).map((m: any) => ({
+        id: m.id,
+        role: m.role,
+        user_id: m.user_id,
+        profiles: { full_name: m.full_name, email: m.email, avatar_url: m.avatar_url },
+      }));
+      const isAdmin = (rolesRow.rows ?? []).some((r: any) => r.role === "admin");
+      return {
+        project,
+        members,
+        adrs: adrsRow.rows ?? [],
+        myRole: myMembershipRow?.role ?? null,
+        isAdmin,
+      };
+    }
+
+    const { data: project, error } = await supabase
+      .from("projects")
+      .select("*")
+      .eq("id", data.id)
+      .maybeSingle();
     if (error) throw new Error(error.message);
     if (!project) throw new Error("Project not found");
     const { data: members } = await supabase
@@ -82,34 +328,163 @@ export const getProject = createServerFn({ method: "GET" })
       .select("id, role, user_id, profiles(full_name, email, avatar_url)")
       .eq("project_id", data.id);
     const { data: adrs } = await supabase
-      .from("adrs").select("id, full_id, title, status, tags, updated_at, author_id")
+      .from("adrs")
+      .select("id, full_id, title, status, tags, updated_at, author_id")
       .eq("project_id", data.id)
       .order("adr_number", { ascending: false });
     const { data: myMembership } = await supabase
-      .from("project_members").select("role").eq("project_id", data.id).eq("user_id", userId).maybeSingle();
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
+      .from("project_members")
+      .select("role")
+      .eq("project_id", data.id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    const { data: roles } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId);
     const isAdmin = (roles ?? []).some((r: any) => r.role === "admin");
-    return { project, members: members ?? [], adrs: adrs ?? [], myRole: myMembership?.role ?? null, isAdmin };
+    return {
+      project,
+      members: members ?? [],
+      adrs: adrs ?? [],
+      myRole: myMembership?.role ?? null,
+      isAdmin,
+    };
   });
 
+// ─── listProfiles ─────────────────────────────────────────────────────────────
+
 export const listProfiles = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .handler(async ({ context }) => {
-    const { data } = await context.supabase.from("profiles").select("id, email, full_name");
+  .middleware([requireFlexibleAuth])
+  .handler(async ({ context: rawCtx }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const result = await pgQuery<{ id: string; email: string; full_name: string }>(
+        "SELECT id, email, full_name FROM profiles ORDER BY full_name"
+      );
+      return result.rows;
+    }
+
+    const { data } = await supabase
+      .from("profiles")
+      .select("id, email, full_name");
     return data ?? [];
   });
 
-export const addProjectMember = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) =>
-    z.object({
-      project_id: z.string().uuid(),
-      user_id: z.string().uuid(),
-      role: z.enum(["project_admin", "engineer", "intern"]),
-    }).parse(d)
+// ─── createUser (NEW — fixes Issue 3) ────────────────────────────────────────
+
+export const createUser = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        email: z.string().email(),
+        password: z.string().min(8),
+        full_name: z.string().min(1).max(200),
+        role: z.enum(["admin", "member"]).default("member"),
+      })
+      .parse(d)
   )
-  .handler(async ({ context, data }) => {
-    const { error } = await context.supabase.from("project_members").upsert(
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    // Only platform admins can create users
+    if (isDatabaseLocal) {
+      const isAdmin = !!(await pgOne(
+        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+        [userId]
+      ));
+      if (!isAdmin) throw new Error("Only platform admins can create users.");
+
+      const { createLocalUser } = await import(
+        "@/integrations/database/local-auth.server"
+      );
+      const user = await createLocalUser(
+        data.email,
+        data.password,
+        data.full_name,
+        data.role
+      );
+      return user;
+    }
+
+    // Supabase mode: use admin client to create auth user
+    const { data: roles } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId);
+    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
+      throw new Error("Only platform admins can create users.");
+    }
+
+    const { supabaseAdmin } = await import(
+      "@/integrations/supabase/client.server"
+    );
+    const { data: newUser, error } = await supabaseAdmin.auth.admin.createUser({
+      email: data.email,
+      password: data.password,
+      user_metadata: { full_name: data.full_name },
+      email_confirm: true,
+    });
+    if (error) throw new Error(error.message);
+
+    // Assign role (handle_new_user trigger sets 'member' by default for non-first users)
+    if (data.role === "admin") {
+      await supabaseAdmin
+        .from("user_roles")
+        .upsert({ user_id: newUser.user.id, role: "admin" }, { onConflict: "user_id,role" });
+    }
+
+    return { id: newUser.user.id, email: data.email, full_name: data.full_name, role: data.role };
+  });
+
+// ─── loginLocal (NEW — local auth endpoint) ───────────────────────────────────
+
+export const loginLocalFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) =>
+    z.object({ email: z.string().email(), password: z.string() }).parse(d)
+  )
+  .handler(async ({ data }) => {
+    const dbConfig = getDatabaseConfig();
+    if (!dbConfig.isLocal) {
+      throw new Error("Local login is only available in local PostgreSQL mode.");
+    }
+    const { loginLocal } = await import(
+      "@/integrations/database/local-auth.server"
+    );
+    return loginLocal(data.email, data.password);
+  });
+
+// ─── addProjectMember ─────────────────────────────────────────────────────────
+
+export const addProjectMember = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        project_id: z.string().uuid(),
+        user_id: z.string().uuid(),
+        role: z.enum(["project_admin", "engineer", "intern"]),
+      })
+      .parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      await pgQuery(
+        `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)
+         ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+        [data.project_id, data.user_id, data.role]
+      );
+      return { ok: true };
+    }
+
+    const { error } = await supabase.from("project_members").upsert(
       { project_id: data.project_id, user_id: data.user_id, role: data.role },
       { onConflict: "project_id,user_id" }
     );
@@ -117,111 +492,840 @@ export const addProjectMember = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// ─── removeProjectMember ──────────────────────────────────────────────────────
+
 export const removeProjectMember = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
-  .handler(async ({ context, data }) => {
-    const { error } = await context.supabase.from("project_members").delete().eq("id", data.id);
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      await pgQuery("DELETE FROM project_members WHERE id = $1", [data.id]);
+      return { ok: true };
+    }
+
+    const { error } = await supabase
+      .from("project_members")
+      .delete()
+      .eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
 
+// ─── createAdr ────────────────────────────────────────────────────────────────
+
 export const createAdr = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) =>
-    z.object({
-      project_id: z.string().uuid(),
-      title: z.string().min(3).max(200),
-      tags: z.array(z.string()).default([]),
-      context: z.string().default(""),
-      decision: z.string().default(""),
-      consequences: z.string().default(""),
-      alternatives: z.string().default(""),
-    }).parse(d)
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        project_id: z.string().uuid(),
+        title: z.string().min(3).max(200),
+        tags: z.array(z.string()).default([]),
+        context: z.string().default(""),
+        decision: z.string().default(""),
+        consequences: z.string().default(""),
+        alternatives: z.string().default(""),
+        design_changes: z.object({
+          api_changes: z.string().default(""),
+          workflow_changes: z.string().default(""),
+          service_changes: z.string().default(""),
+          infrastructure_changes: z.string().default(""),
+          data_model_changes: z.string().default(""),
+        }).default({}),
+        major_impacts: z.object({
+          operational: z.string().default(""),
+          testing: z.string().default(""),
+          security: z.string().default(""),
+          documentation: z.string().default(""),
+          scalability: z.string().default(""),
+        }).default({}),
+        references_data: z.object({
+          pull_requests: z.array(z.string()).default([]),
+          git_commits: z.array(z.string()).default([]),
+          design_docs: z.array(z.string()).default([]),
+          wiki_pages: z.array(z.string()).default([]),
+          external: z.array(z.string()).default([]),
+        }).default({}),
+      })
+      .parse(d)
   )
-  .handler(async ({ context, data }) => {
-    const { supabase, userId } = context;
-    const { data: adr, error } = await supabase.from("adrs").insert({
-      project_id: data.project_id,
-      title: data.title,
-      tags: data.tags,
-      context: data.context,
-      decision: data.decision,
-      consequences: data.consequences,
-      alternatives: data.alternatives,
-      author_id: userId,
-      // adr_number / full_id assigned by trigger
-      adr_number: 0,
-      full_id: "PENDING",
-    }).select().single();
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const adr = await pgOne<any>(
+        `INSERT INTO adrs
+           (project_id, title, tags, context, decision, consequences, alternatives,
+            design_changes, major_impacts, references_data, author_id)
+         VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11)
+         RETURNING *`,
+        [
+          data.project_id, data.title, data.tags,
+          data.context, data.decision, data.consequences, data.alternatives,
+          JSON.stringify(data.design_changes),
+          JSON.stringify(data.major_impacts),
+          JSON.stringify(data.references_data),
+          userId,
+        ]
+      );
+      if (!adr) throw new Error("Failed to create ADR");
+      return adr;
+    }
+
+    const { data: adr, error } = await supabase
+      .from("adrs")
+      .insert({
+        project_id: data.project_id,
+        title: data.title,
+        tags: data.tags,
+        context: data.context,
+        decision: data.decision,
+        consequences: data.consequences,
+        alternatives: data.alternatives,
+        design_changes: data.design_changes,
+        major_impacts: data.major_impacts,
+        references_data: data.references_data,
+        author_id: userId,
+        adr_number: 0,
+        full_id: "PENDING",
+      })
+      .select()
+      .single();
     if (error) throw new Error(error.message);
     return adr;
   });
 
+
+// ─── getAdr ───────────────────────────────────────────────────────────────────
+
 export const getAdr = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
-  .handler(async ({ context, data }) => {
-    const { supabase } = context;
-    const { data: adr, error } = await supabase.from("adrs").select("*, projects(id, name, code, required_approvals)").eq("id", data.id).maybeSingle();
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const adr = await pgOne<any>(
+        `SELECT a.*, p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.required_approvals
+         FROM adrs a
+         JOIN projects p ON p.id = a.project_id
+         WHERE a.id = $1`,
+        [data.id]
+      );
+      if (!adr) throw new Error("ADR not found");
+
+      // Shape to match Supabase nested format
+      const shaped = {
+        ...adr,
+        projects: {
+          id: adr.proj_id,
+          name: adr.proj_name,
+          code: adr.proj_code,
+          required_approvals: adr.required_approvals,
+        },
+      };
+
+      const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow] = await Promise.all([
+        pgQuery(
+          `SELECT ap.*, pr.full_name, pr.email
+           FROM approvals ap LEFT JOIN profiles pr ON pr.id = ap.user_id
+           WHERE ap.adr_id = $1`,
+          [data.id]
+        ),
+        pgQuery(
+          `SELECT c.*, pr.full_name, pr.email
+           FROM comments c LEFT JOIN profiles pr ON pr.id = c.user_id
+           WHERE c.adr_id = $1 ORDER BY c.created_at`,
+          [data.id]
+        ),
+        pgQuery(
+          `SELECT pv.*, pr.full_name, pr.email
+           FROM published_versions pv LEFT JOIN profiles pr ON pr.id = pv.published_by
+           WHERE pv.adr_id = $1 ORDER BY pv.version_number DESC`,
+          [data.id]
+        ),
+        pgQuery("SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2", [userId, adr.proj_id]),
+        pgQuery("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
+      ]);
+
+      const shapeWithProfiles = (rows: any[]) =>
+        rows.map((r) => ({ ...r, profiles: { full_name: r.full_name, email: r.email } }));
+
+      return {
+        adr: shaped,
+        approvals: shapeWithProfiles(approvalsRow.rows ?? []),
+        comments: shapeWithProfiles(commentsRow.rows ?? []),
+        publishedVersions: shapeWithProfiles(versionsRow.rows ?? []),
+        isAdmin: (adminRow.rows?.length ?? 0) > 0,
+        myRole: roleRow.rows?.[0]?.role ?? null,
+      };
+    }
+
+    const { data: adr, error } = await supabase
+      .from("adrs")
+      .select("*, projects(id, name, code, required_approvals)")
+      .eq("id", data.id)
+      .maybeSingle();
     if (error) throw new Error(error.message);
     if (!adr) throw new Error("ADR not found");
-    const [{ data: approvals }, { data: comments }, { data: versions }] = await Promise.all([
-      supabase.from("approvals").select("*, profiles(full_name, email)").eq("adr_id", data.id),
-      supabase.from("comments").select("*, profiles(full_name, email)").eq("adr_id", data.id).order("created_at"),
-      supabase.from("published_versions").select("*, profiles(full_name, email)").eq("adr_id", data.id).order("version_number", { ascending: false }),
-    ]);
-    return { adr, approvals: approvals ?? [], comments: comments ?? [], versions: versions ?? [] };
+    const [{ data: approvals }, { data: comments }, { data: versions }, { data: member }, { data: adminRole }] =
+      await Promise.all([
+        supabase
+          .from("approvals")
+          .select("*, profiles(full_name, email)")
+          .eq("adr_id", data.id),
+        supabase
+          .from("comments")
+          .select("*, profiles(full_name, email)")
+          .eq("adr_id", data.id)
+          .order("created_at"),
+        supabase
+          .from("published_versions")
+          .select("*, profiles(full_name, email)")
+          .eq("adr_id", data.id)
+          .order("version_number", { ascending: false }),
+        supabase.from("project_members").select("role").eq("user_id", userId).eq("project_id", adr.project_id).maybeSingle(),
+        supabase.from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle(),
+      ]);
+    return {
+      adr,
+      approvals: approvals ?? [],
+      comments: comments ?? [],
+      publishedVersions: versions ?? [],
+      isAdmin: !!adminRole,
+      myRole: member?.role ?? null,
+    };
   });
+
+// ─── updateAdrStatus ──────────────────────────────────────────────────────────
 
 export const updateAdrStatus = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({
-    id: z.string().uuid(),
-    status: z.enum(["draft", "under_review", "approved", "published", "superseded"]),
-  }).parse(d))
-  .handler(async ({ context, data }) => {
-    const { error } = await context.supabase.from("adrs").update({ status: data.status }).eq("id", data.id);
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        status: z.enum(["draft", "under_review", "approved", "published", "superseded"]),
+      })
+      .parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      await pgQuery("UPDATE adrs SET status = $1 WHERE id = $2", [
+        data.status,
+        data.id,
+      ]);
+      return { ok: true };
+    }
+
+    const { error } = await supabase
+      .from("adrs")
+      .update({ status: data.status })
+      .eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
+
+// ─── approveAdr ───────────────────────────────────────────────────────────────
 
 export const approveAdr = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({
-    adr_id: z.string().uuid(),
-    decision: z.enum(["approve", "request_changes"]),
-    note: z.string().optional(),
-  }).parse(d))
-  .handler(async ({ context, data }) => {
-    const { error } = await context.supabase.from("approvals").upsert({
-      adr_id: data.adr_id,
-      user_id: context.userId,
-      decision: data.decision,
-      note: data.note ?? null,
-    }, { onConflict: "adr_id,user_id" });
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        adr_id: z.string().uuid(),
+        decision: z.enum(["approve", "request_changes"]),
+        note: z.string().optional(),
+      })
+      .parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      await pgQuery(
+        `INSERT INTO approvals (adr_id, user_id, decision, note)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (adr_id, user_id) DO UPDATE
+           SET decision = EXCLUDED.decision, note = EXCLUDED.note`,
+        [data.adr_id, userId, data.decision, data.note ?? null]
+      );
+      return { ok: true };
+    }
+
+    const { error } = await supabase.from("approvals").upsert(
+      {
+        adr_id: data.adr_id,
+        user_id: userId,
+        decision: data.decision,
+        note: data.note ?? null,
+      },
+      { onConflict: "adr_id,user_id" }
+    );
     if (error) throw new Error(error.message);
     return { ok: true };
   });
+
+// ─── addComment ───────────────────────────────────────────────────────────────
 
 export const addComment = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ adr_id: z.string().uuid(), body: z.string().min(1).max(4000) }).parse(d))
-  .handler(async ({ context, data }) => {
-    const { error } = await context.supabase.from("comments").insert({
-      adr_id: data.adr_id, user_id: context.userId, body: data.body,
-    });
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        adr_id: z.string().uuid(),
+        body: z.string().min(1).max(4000),
+      })
+      .parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      await pgQuery(
+        "INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)",
+        [data.adr_id, userId, data.body]
+      );
+      return { ok: true };
+    }
+
+    const { error } = await supabase
+      .from("comments")
+      .insert({ adr_id: data.adr_id, user_id: userId, body: data.body });
     if (error) throw new Error(error.message);
     return { ok: true };
   });
 
+// ─── dashboardStats ───────────────────────────────────────────────────────────
+
 export const dashboardStats = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .handler(async ({ context }) => {
-    const { supabase } = context;
-    const { data: adrs } = await supabase.from("adrs").select("id, status, full_id, title, updated_at, project_id, projects(name, code)").order("updated_at", { ascending: false }).limit(20);
+  .middleware([requireFlexibleAuth])
+  .handler(async ({ context: rawCtx }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const [adrsRow, projectsRow] = await Promise.all([
+        pgQuery(
+          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
+                  p.name AS proj_name, p.code AS proj_code
+           FROM adrs a JOIN projects p ON p.id = a.project_id
+           ORDER BY a.updated_at DESC LIMIT 20`
+        ),
+        pgQuery("SELECT id, name, code FROM projects"),
+      ]);
+
+      const adrs = (adrsRow.rows ?? []).map((a: any) => ({
+        ...a,
+        projects: { name: a.proj_name, code: a.proj_code },
+      }));
+      const counts = { total: 0, draft: 0, under_review: 0, approved: 0, published: 0, superseded: 0 };
+      adrs.forEach((a: any) => {
+        counts.total++;
+        if (a.status in counts) counts[a.status as keyof typeof counts]++;
+      });
+      return { recent: adrs, counts, projectsCount: (projectsRow.rows ?? []).length };
+    }
+
+    const { data: adrs } = await supabase
+      .from("adrs")
+      .select("id, status, full_id, title, updated_at, project_id, projects(name, code)")
+      .order("updated_at", { ascending: false })
+      .limit(20);
     const counts = { total: 0, draft: 0, under_review: 0, approved: 0, published: 0, superseded: 0 };
-    (adrs ?? []).forEach((a: any) => { counts.total++; counts[a.status as keyof typeof counts]++; });
+    (adrs ?? []).forEach((a: any) => {
+      counts.total++;
+      counts[a.status as keyof typeof counts]++;
+    });
     const { data: projects } = await supabase.from("projects").select("id, name, code");
     return { recent: adrs ?? [], counts, projectsCount: (projects ?? []).length };
+  });
+
+// ─── updateUser (admin: edit role / name) ─────────────────────────────────────
+
+export const updateUser = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z.object({
+      user_id: z.string().uuid(),
+      full_name: z.string().min(1).max(200).optional(),
+      role: z.enum(["admin", "member"]).optional(),
+    }).parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const isAdmin = !!(await pgOne(
+        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+        [userId]
+      ));
+      if (!isAdmin) throw new Error("Only platform admins can edit users.");
+
+      if (data.full_name) {
+        await pgQuery("UPDATE profiles SET full_name = $1 WHERE id = $2", [data.full_name, data.user_id]);
+        await pgQuery("UPDATE local_users SET full_name = $1 WHERE id = $2", [data.full_name, data.user_id]);
+      }
+      if (data.role) {
+        // Replace all platform roles for this user
+        await pgQuery("DELETE FROM user_roles WHERE user_id = $1 AND role IN ('admin','member')", [data.user_id]);
+        await pgQuery("INSERT INTO user_roles (user_id, role) VALUES ($1, $2)", [data.user_id, data.role]);
+        await pgQuery("UPDATE local_users SET role = $1 WHERE id = $2", [data.role, data.user_id]);
+      }
+      return { ok: true };
+    }
+
+    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
+    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
+      throw new Error("Only platform admins can edit users.");
+    }
+    if (data.full_name) {
+      await supabase.from("profiles").update({ full_name: data.full_name }).eq("id", data.user_id);
+    }
+    if (data.role) {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      await supabaseAdmin.from("user_roles").delete().eq("user_id", data.user_id).in("role", ["admin", "member"]);
+      await supabaseAdmin.from("user_roles").insert({ user_id: data.user_id, role: data.role });
+    }
+    return { ok: true };
+  });
+
+// ─── updateProfile (self: edit own name / avatar_url) ────────────────────────
+
+export const updateProfile = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z.object({
+      full_name: z.string().min(1).max(200),
+      avatar_url: z.string().url().optional().or(z.literal("")),
+    }).parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      await pgQuery(
+        "UPDATE profiles SET full_name = $1, avatar_url = $2 WHERE id = $3",
+        [data.full_name, data.avatar_url || null, userId]
+      );
+      await pgQuery(
+        "UPDATE local_users SET full_name = $1 WHERE id = $2",
+        [data.full_name, userId]
+      );
+      return { ok: true };
+    }
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ full_name: data.full_name, avatar_url: data.avatar_url || null })
+      .eq("id", userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// ─── changePassword (local mode only) ────────────────────────────────────────
+
+export const changePassword = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z.object({
+      current_password: z.string().min(1),
+      new_password: z.string().min(8),
+    }).parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { userId, isDatabaseLocal } = context;
+
+    if (!isDatabaseLocal) {
+      throw new Error("Use Supabase account settings to change your password.");
+    }
+
+    const user = await pgOne<{ password_hash: string; email: string }>(
+      "SELECT password_hash, email FROM local_users WHERE id = $1",
+      [userId]
+    );
+    if (!user) throw new Error("User not found");
+
+    const { loginLocal } = await import("@/integrations/database/local-auth.server");
+    // Verify current password by attempting login
+    try {
+      await loginLocal(user.email, data.current_password);
+    } catch {
+      throw new Error("Current password is incorrect");
+    }
+
+    // Hash new password
+    const { createLocalUser: _ , ...authHelpers } = await import("@/integrations/database/local-auth.server");
+    // Re-import to get hashPassword (we'll do it via a workaround)
+    const { pbkdf2, randomBytes } = await import("crypto");
+    const salt = randomBytes(16).toString("hex");
+    const newHash = await new Promise<string>((resolve, reject) => {
+      pbkdf2(data.new_password, salt, 100_000, 64, "sha256", (err, key) => {
+        if (err) return reject(err);
+        resolve(`${salt}:${key.toString("hex")}`);
+      });
+    });
+
+    await pgQuery("UPDATE local_users SET password_hash = $1 WHERE id = $2", [newHash, userId]);
+    return { ok: true };
+  });
+
+export const adminResetPassword = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z.object({
+      target_user_id: z.string().uuid(),
+      new_password: z.string().min(8),
+    }).parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { userId, isDatabaseLocal, supabase } = context;
+
+    if (!isDatabaseLocal) {
+      throw new Error("Use Supabase admin panel to manage passwords.");
+    }
+
+    const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]));
+    if (!isAdmin) throw new Error("Unauthorized");
+
+    // Hash new password
+    const { pbkdf2, randomBytes } = await import("crypto");
+    const salt = randomBytes(16).toString("hex");
+    const newHash = await new Promise<string>((resolve, reject) => {
+      pbkdf2(data.new_password, salt, 100_000, 64, "sha256", (err, key) => {
+        if (err) return reject(err);
+        resolve(`${salt}:${key.toString("hex")}`);
+      });
+    });
+
+    await pgQuery("UPDATE local_users SET password_hash = $1 WHERE id = $2", [newHash, data.target_user_id]);
+    return { ok: true };
+  });
+
+// ─── updateAdr ────────────────────────────────────────────────────────────────
+
+const adrFieldsSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().min(3).max(200).optional(),
+  tags: z.array(z.string()).optional(),
+  context: z.string().optional(),
+  decision: z.string().optional(),
+  consequences: z.string().optional(),
+  alternatives: z.string().optional(),
+  design_changes: z.any().optional(),
+  major_impacts: z.any().optional(),
+  references_data: z.any().optional(),
+});
+
+export const updateAdr = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => adrFieldsSchema.parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      // Check author or admin/project_admin
+      const adr = await pgOne<any>("SELECT author_id, project_id FROM adrs WHERE id = $1", [data.id]);
+      if (!adr) throw new Error("ADR not found");
+      const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'", [userId]));
+      const isProjectAdmin = !!(await pgOne("SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2 AND role='project_admin'", [userId, adr.project_id]));
+      const isAuthor = adr.author_id === userId;
+      if (!isAdmin && !isProjectAdmin && !isAuthor) throw new Error("Not authorized to edit this ADR");
+
+      const fields: string[] = [];
+      const vals: any[] = [];
+      let p = 1;
+      const set = (col: string, val: any, cast = "") => {
+        if (val !== undefined) { fields.push(`${col} = $${p++}${cast}`); vals.push(typeof val === "object" ? JSON.stringify(val) : val); }
+      };
+      set("title", data.title);
+      set("tags", data.tags, "::text[]");
+      set("context", data.context);
+      set("decision", data.decision);
+      set("consequences", data.consequences);
+      set("alternatives", data.alternatives);
+      set("design_changes", data.design_changes, "::jsonb");
+      set("major_impacts", data.major_impacts, "::jsonb");
+      set("references_data", data.references_data, "::jsonb");
+      if (!fields.length) return { ok: true };
+      vals.push(data.id);
+      await pgQuery(`UPDATE adrs SET ${fields.join(", ")} WHERE id = $${p}`, vals);
+      return { ok: true };
+    }
+
+    const updates: any = {};
+    if (data.title !== undefined) updates.title = data.title;
+    if (data.tags !== undefined) updates.tags = data.tags;
+    if (data.context !== undefined) updates.context = data.context;
+    if (data.decision !== undefined) updates.decision = data.decision;
+    if (data.consequences !== undefined) updates.consequences = data.consequences;
+    if (data.alternatives !== undefined) updates.alternatives = data.alternatives;
+    if (data.design_changes !== undefined) updates.design_changes = data.design_changes;
+    if (data.major_impacts !== undefined) updates.major_impacts = data.major_impacts;
+    if (data.references_data !== undefined) updates.references_data = data.references_data;
+
+    const { error } = await supabase.from("adrs").update(updates).eq("id", data.id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// ─── searchAdrs ───────────────────────────────────────────────────────────────
+
+export const searchAdrs = createServerFn({ method: "GET" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z.object({
+      q: z.string().min(1).max(300),
+      status: z.string().optional(),
+      project_id: z.string().uuid().optional(),
+    }).parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+    const like = `%${data.q.toLowerCase()}%`;
+
+    if (isDatabaseLocal) {
+      let sql = `
+        SELECT a.id, a.full_id, a.title, a.status, a.tags, a.updated_at, a.project_id,
+               p.name AS proj_name, p.code AS proj_code
+        FROM adrs a
+        JOIN projects p ON p.id = a.project_id
+        JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
+        WHERE (
+          lower(a.title) LIKE $2
+          OR lower(a.context) LIKE $2
+          OR lower(a.decision) LIKE $2
+          OR lower(a.consequences) LIKE $2
+          OR lower(a.full_id) LIKE $2
+          OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE lower(t) LIKE $2)
+        )`;
+      const params: any[] = [userId, like];
+      let p = 3;
+      if (data.status) { sql += ` AND a.status = $${p++}`; params.push(data.status); }
+      if (data.project_id) { sql += ` AND a.project_id = $${p++}`; params.push(data.project_id); }
+      sql += " ORDER BY a.updated_at DESC LIMIT 50";
+      const result = await pgQuery(sql, params);
+      return (result.rows ?? []).map((a: any) => ({ ...a, projects: { name: a.proj_name, code: a.proj_code } }));
+    }
+
+    let query = supabase
+      .from("adrs")
+      .select("id, full_id, title, status, tags, updated_at, project_id, projects(name,code)")
+      .or(`title.ilike.${like},context.ilike.${like},decision.ilike.${like},full_id.ilike.${like}`)
+      .order("updated_at", { ascending: false })
+      .limit(50);
+    if (data.status) query = query.eq("status", data.status);
+    if (data.project_id) query = query.eq("project_id", data.project_id);
+    const { data: results } = await query;
+    return results ?? [];
+  });
+
+// ─── getAdrRelationships ──────────────────────────────────────────────────────
+
+export const getAdrRelationships = createServerFn({ method: "GET" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ adr_id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const result = await pgQuery(
+        `SELECT r.*, sa.full_id AS source_full_id, sa.title AS source_title,
+                ta.full_id AS target_full_id, ta.title AS target_title,
+                ta.status AS target_status
+         FROM adr_relationships r
+         JOIN adrs sa ON sa.id = r.source_adr_id
+         JOIN adrs ta ON ta.id = r.target_adr_id
+         WHERE r.source_adr_id = $1 OR r.target_adr_id = $1`,
+        [data.adr_id]
+      );
+      return result.rows ?? [];
+    }
+
+    const { data: rels } = await supabase
+      .from("adr_relationships")
+      .select("*, source:adrs!source_adr_id(full_id,title), target:adrs!target_adr_id(full_id,title,status)")
+      .or(`source_adr_id.eq.${data.adr_id},target_adr_id.eq.${data.adr_id}`);
+    return rels ?? [];
+  });
+
+// ─── addAdrRelationship ───────────────────────────────────────────────────────
+
+export const addAdrRelationship = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z.object({
+      source_adr_id: z.string().uuid(),
+      target_adr_id: z.string().uuid(),
+      rel_type: z.enum(["depends_on", "related_to", "supersedes", "superseded_by", "conflicts_with", "affects"]),
+    }).parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      await pgQuery(
+        `INSERT INTO adr_relationships (source_adr_id, target_adr_id, rel_type, created_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (source_adr_id, target_adr_id, rel_type) DO NOTHING`,
+        [data.source_adr_id, data.target_adr_id, data.rel_type, userId]
+      );
+      return { ok: true };
+    }
+
+    const { error } = await supabase.from("adr_relationships").upsert(
+      { source_adr_id: data.source_adr_id, target_adr_id: data.target_adr_id, rel_type: data.rel_type, created_by: userId },
+      { onConflict: "source_adr_id,target_adr_id,rel_type" }
+    );
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// ─── removeAdrRelationship ────────────────────────────────────────────────────
+
+export const removeAdrRelationship = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      await pgQuery("DELETE FROM adr_relationships WHERE id = $1", [data.id]);
+      return { ok: true };
+    }
+    const { error } = await supabase.from("adr_relationships").delete().eq("id", data.id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// ─── publishAdr ───────────────────────────────────────────────────────────────
+
+export const publishAdr = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z.object({ adr_id: z.string().uuid() }).parse(d)
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    // Fetch the ADR
+    let adr: any;
+    if (isDatabaseLocal) {
+      adr = await pgOne<any>(
+        `SELECT a.*, p.code AS proj_code, p.name AS proj_name, p.repo_url, p.branch, p.adr_path, p.git_pat
+         FROM adrs a JOIN projects p ON p.id = a.project_id WHERE a.id = $1`,
+        [data.adr_id]
+      );
+    } else {
+      const { data: d2 } = await supabase
+        .from("adrs")
+        .select("*, projects(code,name,repo_url,branch,adr_path,git_pat)")
+        .eq("id", data.adr_id)
+        .single();
+      adr = d2 ? { ...d2, proj_code: d2.projects?.code, proj_name: d2.projects?.name, repo_url: d2.projects?.repo_url, branch: d2.projects?.branch, adr_path: d2.projects?.adr_path, git_pat: d2.projects?.git_pat } : null;
+    }
+    if (!adr) throw new Error("ADR not found");
+
+    // Generate Markdown
+    const { generateAdrMarkdown } = await import("@/lib/adr-markdown");
+    const markdown = generateAdrMarkdown(adr);
+
+    // Attempt Git push (non-blocking if no repo configured)
+    let gitCommitHash: string | undefined;
+    if (adr.repo_url) {
+      try {
+        const { pushAdrToGit } = await import("@/lib/api/git.server");
+        gitCommitHash = await pushAdrToGit({ adr, markdown, publisherUserId: userId });
+      } catch (err: any) {
+        console.warn("Git push failed:", err);
+        throw new Error(`Git push failed: ${err.message}`);
+      }
+    }
+
+    // Get next version number
+    let nextVersion = 1;
+    if (isDatabaseLocal) {
+      const vRow = await pgOne<{ max: number }>(
+        "SELECT COALESCE(MAX(version_number), 0) + 1 AS max FROM published_versions WHERE adr_id = $1",
+        [data.adr_id]
+      );
+      nextVersion = vRow?.max ?? 1;
+    } else {
+      const { data: vRows } = await supabase
+        .from("published_versions")
+        .select("version_number")
+        .eq("adr_id", data.adr_id)
+        .order("version_number", { ascending: false })
+        .limit(1);
+      nextVersion = ((vRows?.[0]?.version_number) ?? 0) + 1;
+    }
+
+    // Insert published version + update ADR status
+    if (isDatabaseLocal) {
+      await pgQuery(
+        `INSERT INTO published_versions (adr_id, version_number, markdown, git_commit_hash, published_by)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [data.adr_id, nextVersion, markdown, gitCommitHash ?? null, userId]
+      );
+      await pgQuery("UPDATE adrs SET status = 'published', current_version = $1 WHERE id = $2", [nextVersion, data.adr_id]);
+    } else {
+      await supabase.from("published_versions").insert({
+        adr_id: data.adr_id, version_number: nextVersion, markdown,
+        git_commit_hash: gitCommitHash ?? null, published_by: userId,
+      });
+      await supabase.from("adrs").update({ status: "published", current_version: nextVersion }).eq("id", data.adr_id);
+    }
+
+    return { version: nextVersion, gitCommitHash, markdown };
+  });
+
+// ─── getProjectForGraph ───────────────────────────────────────────────────────
+
+export const getProjectForGraph = createServerFn({ method: "GET" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const [adrsRow, relsRow] = await Promise.all([
+        pgQuery("SELECT id, full_id, title, status FROM adrs WHERE project_id = $1", [data.project_id]),
+        pgQuery(
+          `SELECT r.id, r.source_adr_id, r.target_adr_id, r.rel_type
+           FROM adr_relationships r
+           JOIN adrs a ON a.id = r.source_adr_id
+           WHERE a.project_id = $1`,
+          [data.project_id]
+        ),
+      ]);
+      return { adrs: adrsRow.rows ?? [], relationships: relsRow.rows ?? [] };
+    }
+
+    const [{ data: adrs }, { data: rels }] = await Promise.all([
+      supabase.from("adrs").select("id, full_id, title, status").eq("project_id", data.project_id),
+      supabase.from("adr_relationships").select("id, source_adr_id, target_adr_id, rel_type")
+        .in("source_adr_id", (await supabase.from("adrs").select("id").eq("project_id", data.project_id)).data?.map((a: any) => a.id) ?? []),
+    ]);
+    return { adrs: adrs ?? [], relationships: rels ?? [] };
   });

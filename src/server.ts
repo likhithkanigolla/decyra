@@ -8,6 +8,7 @@ type ServerEntry = {
 };
 
 let serverEntryPromise: Promise<ServerEntry> | undefined;
+let migrationsRan = false;
 
 async function getServerEntry(): Promise<ServerEntry> {
   if (!serverEntryPromise) {
@@ -16,6 +17,28 @@ async function getServerEntry(): Promise<ServerEntry> {
     );
   }
   return serverEntryPromise;
+}
+
+/**
+ * Auto-run migrations when using local PostgreSQL mode.
+ * Runs once per process startup, skipped entirely in Supabase mode.
+ */
+async function runMigrationsIfNeeded(): Promise<void> {
+  if (migrationsRan) return;
+  migrationsRan = true;
+
+  const dbType = process.env.DATABASE_TYPE;
+  if (dbType !== 'postgres') return;
+
+  try {
+    console.log('🔄 [server] Running database migrations for local PostgreSQL...');
+    const { runMigrations } = await import('./integrations/database/migrate');
+    await runMigrations();
+    console.log('✅ [server] Migrations complete.');
+  } catch (err) {
+    console.error('❌ [server] Migration failed on startup:', err);
+    // Don't crash the server — let the request proceed and show the error in UI
+  }
 }
 
 // h3 swallows in-handler throws into a normal 500 Response with body
@@ -39,6 +62,9 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
+    // Run migrations once before handling the first request
+    await runMigrationsIfNeeded();
+
     try {
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
