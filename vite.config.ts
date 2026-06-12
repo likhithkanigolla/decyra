@@ -8,7 +8,7 @@ import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 export default defineConfig({
   nitro: {
-    preset: "vercel",
+    preset: process.env.VERCEL ? "vercel" : "node-server",
   },
   esbuild: {
     jsx: 'automatic',
