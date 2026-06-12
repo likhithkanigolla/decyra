@@ -101,11 +101,11 @@ function AdrDetail() {
     finally { setBusy(""); }
   }
 
-  async function submitApproval(decision: "approved" | "rejected") {
+  async function submitApproval(decision: "approve" | "request_changes") {
     setBusy("approve");
     try {
       await approveFn({ data: { adr_id: adrId, decision, note: approvalNote } });
-      toast.success(decision === "approved" ? "Approved!" : "Rejected");
+      toast.success(decision === "approve" ? "Approved!" : "Requested Changes");
       setApprovalNote("");
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
     } catch (err: any) { toast.error(err.message); }
@@ -331,11 +331,11 @@ function AdrDetail() {
           {(data.approvals ?? []).length > 0 && (
             <div className="mb-4 space-y-2">
               {data.approvals.map((a: any) => (
-                <div key={a.id} className={`rounded-lg p-3 border text-sm ${a.decision === "approved" ? "border-success/30 bg-success/5" : "border-destructive/30 bg-destructive/5"}`}>
+                <div key={a.id} className={`rounded-lg p-3 border text-sm ${a.decision === "approve" ? "border-success/30 bg-success/5" : "border-destructive/30 bg-destructive/5"}`}>
                   <div className="flex items-center gap-2">
-                    <ThumbsUp className={`h-3.5 w-3.5 ${a.decision === "approved" ? "text-success" : "text-destructive"}`} />
+                    <ThumbsUp className={`h-3.5 w-3.5 ${a.decision === "approve" ? "text-success" : "text-destructive"}`} />
                     <span className="font-medium">{a.profiles?.full_name ?? "User"}</span>
-                    <span className={a.decision === "approved" ? "text-success" : "text-destructive"}>{a.decision}</span>
+                    <span className={a.decision === "approve" ? "text-success" : "text-destructive"}>{a.decision === "approve" ? "Approved" : "Requested Changes"}</span>
                     <span className="text-muted-foreground ml-auto text-xs">{new Date(a.created_at).toLocaleDateString()}</span>
                   </div>
                   {a.note && <p className="mt-1.5 text-xs text-muted-foreground">{a.note}</p>}
@@ -415,11 +415,11 @@ function AdrDetail() {
                   rows={2} placeholder="Optional review note…"
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs resize-none" />
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => submitApproval("approved")} disabled={busy === "approve"}
+                  <button onClick={() => submitApproval("approve")} disabled={busy === "approve"}
                     className="h-8 rounded-md bg-success px-2 text-xs font-medium text-success-foreground hover:opacity-90 disabled:opacity-50">
                     Approve
                   </button>
-                  <button onClick={() => submitApproval("rejected")} disabled={busy === "approve"}
+                  <button onClick={() => submitApproval("request_changes")} disabled={busy === "approve"}
                     className="h-8 rounded-md bg-destructive px-2 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
                     Reject
                   </button>
@@ -433,13 +433,47 @@ function AdrDetail() {
             <div className="mt-3 pt-3 border-t border-border">
               <div className="flex items-center justify-between text-xs mb-1.5">
                 <span className="text-muted-foreground">Approvals</span>
-                <span>{(data.approvals ?? []).filter((a: any) => a.decision === "approved").length} / {adr.projects?.required_approvals ?? 3}</span>
+                <span>{(data.approvals ?? []).filter((a: any) => a.decision === "approve").length} / {adr.projects?.required_approvals ?? 3}</span>
               </div>
               <div className="h-1.5 rounded-full bg-border overflow-hidden">
                 <div
                   className="h-full bg-success rounded-full transition-all"
-                  style={{ width: `${Math.min(100, ((data.approvals ?? []).filter((a: any) => a.decision === "approved").length / (adr.projects?.required_approvals ?? 3)) * 100)}%` }}
+                  style={{ width: `${Math.min(100, ((data.approvals ?? []).filter((a: any) => a.decision === "approve").length / (adr.projects?.required_approvals ?? 3)) * 100)}%` }}
                 />
+              </div>
+            </div>
+          )}
+
+          {/* Approved By List */}
+          {(data.approvals ?? []).filter((a: any) => a.decision === "approve").length > 0 && (
+            <div className="mt-3 pt-3 border-t border-border">
+              <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Approved By</h4>
+              <div className="space-y-1.5">
+                {(data.approvals ?? []).filter((a: any) => a.decision === "approve").map((a: any) => (
+                  <div key={a.id} className="flex items-center gap-2 text-xs">
+                    <div className="h-5 w-5 rounded-full bg-success/10 flex items-center justify-center shrink-0">
+                      <ThumbsUp className="h-2.5 w-2.5 text-success" />
+                    </div>
+                    <span className="truncate font-medium">{a.profiles?.full_name ?? "User"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Rejected By List */}
+          {(data.approvals ?? []).filter((a: any) => a.decision === "request_changes").length > 0 && (
+            <div className="mt-3 pt-3 border-t border-border">
+              <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Changes Requested By</h4>
+              <div className="space-y-1.5">
+                {(data.approvals ?? []).filter((a: any) => a.decision === "request_changes").map((a: any) => (
+                  <div key={a.id} className="flex items-center gap-2 text-xs">
+                    <div className="h-5 w-5 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
+                      <ThumbsUp className="h-2.5 w-2.5 text-destructive rotate-180" />
+                    </div>
+                    <span className="truncate font-medium">{a.profiles?.full_name ?? "User"}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -454,8 +488,8 @@ function AdrDetail() {
               {(rels as any[]).map((r) => {
                 const isSource = r.source_adr_id === adrId;
                 const otherId = isSource ? r.target_adr_id : r.source_adr_id;
-                const otherFullId = isSource ? r.target_full_id : r.source_full_id;
-                const otherTitle = isSource ? r.target_title : r.source_title;
+                const otherFullId = isSource ? (r.target_full_id || r.target?.full_id) : (r.source_full_id || r.source?.full_id);
+                const otherTitle = isSource ? (r.target_title || r.target?.title) : (r.source_title || r.source?.title);
                 return (
                   <div key={r.id} className="flex items-center gap-2 text-xs p-2 rounded-md bg-accent/50">
                     <div className="flex-1 min-w-0">
