@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -13,8 +13,11 @@ COPY . .
 # Build application (generates .output for node-server preset)
 RUN npm run build
 
+# Bundle the create-admin script so it can run in production without TypeScript
+RUN npx esbuild scripts/create-admin.ts --bundle --platform=node --format=esm --outfile=.output/create-admin.mjs
+
 # Production stage
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
@@ -30,5 +33,5 @@ ENV PORT=3000
 # Expose the application port
 EXPOSE 3000
 
-# Start the application
-CMD ["node", ".output/server/index.mjs"]
+# Start the application (run admin creation first, then start server)
+CMD ["sh", "-c", "node .output/create-admin.mjs && node .output/server/index.mjs"]
