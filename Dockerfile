@@ -10,6 +10,9 @@ RUN npm ci
 # Copy application source
 COPY . .
 
+# Force production environment for the Vite/React compiler
+ENV NODE_ENV=production
+
 # Build application (generates .output for node-server preset)
 RUN npm run build
 
