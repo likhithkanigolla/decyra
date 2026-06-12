@@ -12,7 +12,7 @@ export const Route = createFileRoute("/_authenticated/app/projects/new")({
 function NewProject() {
   const navigate = useNavigate();
   const fn = useServerFn(createProject);
-  const [form, setForm] = useState({ name: "", code: "", description: "", repo_url: "", branch: "main", adr_path: "docs/adr" });
+  const [form, setForm] = useState({ name: "", code: "", description: "", repo_url: "", branch: "main", adr_path: "docs/adr", git_pat: "" });
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -61,6 +61,11 @@ function NewProject() {
         <Field label="ADR directory path">
           <input value={form.adr_path} onChange={(e) => setForm({ ...form, adr_path: e.target.value })}
             placeholder="docs/adr/user-management"
+            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm font-mono" />
+        </Field>
+        <Field label="GitHub Personal Access Token (Optional)" hint="Required for auto-pushing ADRs to a private repository">
+          <input type="password" value={form.git_pat} onChange={(e) => setForm({ ...form, git_pat: e.target.value })}
+            placeholder="ghp_..."
             className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm font-mono" />
         </Field>
 

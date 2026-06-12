@@ -1,7 +1,10 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { useServerFn } from "@tanstack/react-start";
+import { loginLocalFn } from "@/lib/api/decyra.functions";
 import { toast } from "sonner";
+
+const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({ meta: [{ title: "Sign in — Decyra" }] }),
@@ -10,34 +13,57 @@ export const Route = createFileRoute("/auth")({
 
 function AuthPage() {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const localLoginFn = useServerFn(loginLocalFn);
+
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate({ to: "/app" });
-    });
+    if (IS_LOCAL) {
+      // Check for existing valid local token
+      const token = localStorage.getItem("local_auth_token");
+      if (token) {
+        try {
+          const parts = token.split(".");
+          if (parts.length === 3) {
+            const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+            if (!payload.exp || payload.exp > Math.floor(Date.now() / 1000)) {
+              navigate({ to: "/app" });
+              return;
+            }
+          }
+          localStorage.removeItem("local_auth_token");
+        } catch {
+          localStorage.removeItem("local_auth_token");
+        }
+      }
+    } else {
+      // Supabase mode: check existing session
+      import("@/integrations/supabase/client").then(({ supabase }) => {
+        supabase.auth.getSession().then(({ data }) => {
+          if (data.session) navigate({ to: "/app" });
+        });
+      });
+    }
   }, [navigate]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     try {
-      if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
-          email, password,
-          options: { data: { full_name: name }, emailRedirectTo: window.location.origin },
-        });
-        if (error) throw error;
-        toast.success("Account created. Welcome!");
+      if (IS_LOCAL) {
+        // Local Postgres mode: call our loginLocalFn server function
+        const result = await localLoginFn({ data: { email, password } });
+        localStorage.setItem("local_auth_token", result.token);
+        navigate({ to: "/app" });
       } else {
+        // Supabase mode: unchanged
+        const { supabase } = await import("@/integrations/supabase/client");
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        navigate({ to: "/app" });
       }
-      navigate({ to: "/app" });
     } catch (err: any) {
       toast.error(err.message ?? "Authentication failed");
     } finally {
@@ -53,18 +79,17 @@ function AuthPage() {
           <span className="text-lg font-semibold">Decyra</span>
         </Link>
         <div className="rounded-xl border border-border bg-card p-6">
-          <h1 className="text-xl font-semibold">{mode === "signin" ? "Sign in" : "Create account"}</h1>
+          <h1 className="text-xl font-semibold">Sign in</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {mode === "signin" ? "Welcome back to your governance workspace." : "The first account becomes the platform admin."}
+            Welcome back to your governance workspace.
+            {IS_LOCAL && (
+              <span className="ml-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 text-xs font-medium">
+                Local mode
+              </span>
+            )}
           </p>
 
           <form onSubmit={submit} className="mt-5 space-y-3">
-            {mode === "signup" && (
-              <Field label="Full name">
-                <input value={name} onChange={(e) => setName(e.target.value)} required
-                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
-              </Field>
-            )}
             <Field label="Email">
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
                 className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
@@ -75,14 +100,20 @@ function AuthPage() {
             </Field>
             <button disabled={loading} type="submit"
               className="w-full h-10 rounded-md bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
-              {loading ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+              {loading ? "Please wait…" : "Sign in"}
             </button>
           </form>
 
-          <button onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
-            className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground">
-            {mode === "signin" ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
-          </button>
+          {!IS_LOCAL && (
+            <p className="mt-4 text-center text-xs text-muted-foreground">
+              New users must be created by a platform admin.
+            </p>
+          )}
+          {IS_LOCAL && (
+            <p className="mt-4 text-center text-xs text-muted-foreground">
+              Ask your platform admin to create an account for you.
+            </p>
+          )}
         </div>
       </div>
     </div>
