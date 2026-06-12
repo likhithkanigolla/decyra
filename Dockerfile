@@ -14,7 +14,7 @@ COPY . .
 RUN npm run build
 
 # Compile the create-admin script (without bundling external node_modules)
-RUN npx esbuild scripts/create-admin.ts --platform=node --format=esm --packages=external --outfile=.output/create-admin.mjs
+RUN npx esbuild scripts/create-admin.ts --bundle --platform=node --format=esm --packages=external --outfile=.output/create-admin.mjs
 
 # Production stage
 FROM node:22-alpine AS runner
