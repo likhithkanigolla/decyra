@@ -13,17 +13,21 @@ COPY . .
 # Build application (generates .output for node-server preset)
 RUN npm run build
 
-# Bundle the create-admin script so it can run in production without TypeScript
-RUN npx esbuild scripts/create-admin.ts --bundle --platform=node --format=esm --outfile=.output/create-admin.mjs
+# Compile the create-admin script (without bundling external node_modules)
+RUN npx esbuild scripts/create-admin.ts --platform=node --format=esm --packages=external --outfile=.output/create-admin.mjs
 
 # Production stage
 FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-# Copy built assets
+# Install ONLY production dependencies for a lightweight image
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+# Copy built assets and necessary runtime files
 COPY --from=builder /app/.output ./.output
-COPY --from=builder /app/package.json ./
+COPY --from=builder /app/supabase ./supabase
 
 # Set environment variables
 ENV NODE_ENV=production
