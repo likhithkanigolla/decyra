@@ -3,6 +3,7 @@
   "private": true,
   "sideEffects": false,
   "type": "module",
+  "homepage": "/decyra",
   "scripts": {
     "dev": "vite dev",
     "dev:local": "DATABASE_TYPE=postgres VITE_DATABASE_TYPE=postgres LOCAL_DEV_MODE=true vite dev",

@@ -7,7 +7,7 @@ import { useState, useEffect, useRef } from "react";
 import { Search, Filter, X } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 
-export const Route = createFileRoute("/_authenticated/app/search")({
+export const Route = createFileRoute("/_authenticated/search")({
   head: () => ({ meta: [{ title: "Search — Decyra" }] }),
   component: SearchPage,
 });
@@ -139,7 +139,7 @@ function SearchPage() {
               {results!.map((a: any) => (
                 <Link
                   key={a.id}
-                  to="/app/adrs/$adrId"
+                  to="/adrs/$adrId"
                   params={{ adrId: a.id }}
                   className="flex items-start justify-between px-4 py-3.5 hover:bg-accent/40 transition-colors"
                 >

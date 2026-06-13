@@ -1215,17 +1215,26 @@ export const searchAdrs = createServerFn({ method: "GET" })
                p.name AS proj_name, p.code AS proj_code
         FROM adrs a
         JOIN projects p ON p.id = a.project_id
-        ${!isAdmin ? `JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1` : ``}
-        WHERE (
-          lower(a.title) LIKE $2
-          OR lower(a.context) LIKE $2
-          OR lower(a.decision) LIKE $2
-          OR lower(a.consequences) LIKE $2
-          OR lower(a.full_id) LIKE $2
-          OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE lower(t) LIKE $2)
+      `;
+      const params: any[] = [];
+      let p = 1;
+      
+      if (!isAdmin) {
+        sql += ` JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $${p++}`;
+        params.push(userId);
+      }
+      
+      const likeParamIndex = p++;
+      params.push(like);
+      sql += ` WHERE (
+          lower(a.title) LIKE $${likeParamIndex}
+          OR lower(a.context) LIKE $${likeParamIndex}
+          OR lower(a.decision) LIKE $${likeParamIndex}
+          OR lower(a.consequences) LIKE $${likeParamIndex}
+          OR lower(a.full_id) LIKE $${likeParamIndex}
+          OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE lower(t) LIKE $${likeParamIndex})
         )`;
-      const params: any[] = [userId, like];
-      let p = 3;
+      
       if (data.status) { sql += ` AND a.status = $${p++}`; params.push(data.status); }
       if (data.project_id) { sql += ` AND a.project_id = $${p++}`; params.push(data.project_id); }
       sql += " ORDER BY a.updated_at DESC LIMIT 50";

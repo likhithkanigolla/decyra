@@ -8,7 +8,7 @@ import { User, Lock, Shield, Check } from "lucide-react";
 
 const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
 
-export const Route = createFileRoute("/_authenticated/app/profile")({
+export const Route = createFileRoute("/_authenticated/profile")({
   head: () => ({ meta: [{ title: "Profile — Decyra" }] }),
   component: ProfilePage,
 });

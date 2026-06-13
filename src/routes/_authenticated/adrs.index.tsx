@@ -5,7 +5,7 @@ import { dashboardStats } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { useState } from "react";
 
-export const Route = createFileRoute("/_authenticated/app/adrs/")({
+export const Route = createFileRoute("/_authenticated/adrs/")({
   head: () => ({ meta: [{ title: "All ADRs — Decyra" }] }),
   component: AllAdrs,
 });
@@ -43,7 +43,7 @@ function AllAdrs() {
       <div className="mt-4 rounded-lg border border-border bg-card divide-y divide-border">
         {items.length === 0 && <div className="p-6 text-sm text-muted-foreground">No ADRs match.</div>}
         {items.map((a: any) => (
-          <Link key={a.id} to="/app/adrs/$adrId" params={{ adrId: a.id }}
+          <Link key={a.id} to="/adrs/$adrId" params={{ adrId: a.id }}
             className="flex items-center justify-between px-4 py-3 hover:bg-accent/40">
             <div className="min-w-0">
               <div className="flex items-center gap-2">

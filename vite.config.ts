@@ -7,12 +7,17 @@
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 export default defineConfig({
-  nitro: {
-    preset: process.env.VERCEL ? "vercel" : "node-server",
+  // Native Vite options must go under the `vite` key when using the Lovable wrapper
+  vite: {
+    base: "/decyra/",
+    esbuild: {
+      jsx: 'automatic',
+      jsxDev: false,
+    },
   },
-  esbuild: {
-    jsx: 'automatic',
-    jsxDev: false,
+  nitro: {
+    baseURL: "/decyra",
+    preset: process.env.VERCEL ? "vercel" : "node-server",
   },
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).

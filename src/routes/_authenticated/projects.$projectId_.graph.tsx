@@ -21,7 +21,7 @@ import {
 import { ArrowLeft, GitBranch } from "lucide-react";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 
-export const Route = createFileRoute("/_authenticated/app/projects/$projectId_/graph")({
+export const Route = createFileRoute("/_authenticated/projects/$projectId_/graph")({
   head: () => ({ meta: [{ title: "Relationship Graph — Decyra" }] }),
   component: GraphPage,
 });
@@ -52,7 +52,7 @@ function AdrNode({ data }: { data: any }) {
     <div
       className="bg-card border-2 rounded-xl px-4 py-3 shadow-lg cursor-pointer hover:shadow-xl transition-shadow min-w-[180px] max-w-[240px]"
       style={{ borderColor: color }}
-      onClick={() => navigate({ to: "/app/adrs/$adrId", params: { adrId: data.adrId } })}
+      onClick={() => navigate({ to: "/adrs/$adrId", params: { adrId: data.adrId } })}
     >
       <Handle type="target" position={Position.Top} className="!bg-muted-foreground/50 !w-2 !h-2" />
       <div className="text-[10px] font-mono font-bold opacity-60 mb-1" style={{ color }}>{data.fullId}</div>
@@ -133,7 +133,7 @@ function GraphPage() {
       {/* Header */}
       <div className="flex items-center gap-3 px-6 py-4 border-b border-border bg-card shrink-0">
         <button
-          onClick={() => navigate({ to: "/app/projects/$projectId", params: { projectId } })}
+          onClick={() => navigate({ to: "/projects/$projectId", params: { projectId } })}
           className="text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -159,7 +159,7 @@ function GraphPage() {
         <div className="flex-1 flex flex-col items-center justify-center text-center">
           <GitBranch className="h-12 w-12 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">No ADRs in this project yet</p>
-          <Link to="/app/projects/$projectId/adrs/new" params={{ projectId }}
+          <Link to="/projects/$projectId/adrs/new" params={{ projectId }}
             className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">
             Create first ADR
           </Link>

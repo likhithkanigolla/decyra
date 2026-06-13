@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { createProject } from "@/lib/api/decyra.functions";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/_authenticated/app/projects/new")({
+export const Route = createFileRoute("/_authenticated/projects/new")({
   head: () => ({ meta: [{ title: "New project — Decyra" }] }),
   component: NewProject,
 });
@@ -21,7 +21,7 @@ function NewProject() {
     try {
       const p = await fn({ data: form });
       toast.success("Project created");
-      navigate({ to: "/app/projects/$projectId", params: { projectId: p.id } });
+      navigate({ to: "/projects/$projectId", params: { projectId: p.id } });
     } catch (err: any) {
       toast.error(err.message);
     } finally { setBusy(false); }
@@ -70,7 +70,7 @@ function NewProject() {
         </Field>
 
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={() => navigate({ to: "/app/projects" })}
+          <button type="button" onClick={() => navigate({ to: "/projects" })}
             className="h-10 rounded-md border border-border bg-card px-4 text-sm hover:bg-accent">Cancel</button>
           <button disabled={busy} type="submit"
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">

@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { FileText, FolderKanban, Clock, CheckCircle, Send, BookOpen, TrendingUp } from "lucide-react";
 
-export const Route = createFileRoute("/_authenticated/app/")({
+export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard — Decyra" }] }),
   component: Dashboard,
 });
@@ -61,7 +61,7 @@ function Dashboard() {
           <h1 className="text-2xl font-semibold tracking-tight">Good to see you, {userName} 👋</h1>
           <p className="text-sm text-muted-foreground mt-1">Architecture governance overview for your projects.</p>
         </div>
-        <Link to="/app/search"
+        <Link to="/search"
           className="inline-flex items-center gap-2 h-9 rounded-md border border-border bg-card px-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
           <Send className="h-3.5 w-3.5" />
           Search ADRs
@@ -87,7 +87,7 @@ function Dashboard() {
         <div className="lg:col-span-2">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Recent ADRs</h2>
-            <Link to="/app/adrs" className="text-xs text-primary hover:underline">View all</Link>
+            <Link to="/adrs" className="text-xs text-primary hover:underline">View all</Link>
           </div>
           <div className="rounded-xl border border-border bg-card divide-y divide-border">
             {recent.length === 0 && (
@@ -98,7 +98,7 @@ function Dashboard() {
               </div>
             )}
             {recent.map((a: any) => (
-              <Link key={a.id} to="/app/adrs/$adrId" params={{ adrId: a.id }}
+              <Link key={a.id} to="/adrs/$adrId" params={{ adrId: a.id }}
                 className="flex items-center justify-between px-4 py-3 hover:bg-accent/40 transition-colors group">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -157,7 +157,7 @@ function Dashboard() {
               <div className="space-y-2">
                 {(me?.memberships ?? []).map((m: any) => (
                   <Link key={m.project_id}
-                    to="/app/projects/$projectId" params={{ projectId: m.project_id }}
+                    to="/projects/$projectId" params={{ projectId: m.project_id }}
                     className="flex items-center gap-2.5 rounded-lg p-2 hover:bg-accent transition-colors group">
                     <div className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-primary/15 text-primary text-[10px] font-bold">
                       {m.projects?.code?.slice(0, 2)}
@@ -176,12 +176,12 @@ function Dashboard() {
           <div className="rounded-xl border border-border bg-card p-5">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Quick actions</h3>
             <div className="space-y-2">
-              <Link to="/app/projects"
+              <Link to="/projects"
                 className="flex items-center gap-2.5 rounded-lg p-2.5 border border-border hover:border-primary/30 hover:bg-primary/5 transition-colors text-sm">
                 <FolderKanban className="h-4 w-4 text-primary" />
                 View all projects
               </Link>
-              <Link to="/app/search"
+              <Link to="/search"
                 className="flex items-center gap-2.5 rounded-lg p-2.5 border border-border hover:border-primary/30 hover:bg-primary/5 transition-colors text-sm">
                 <Send className="h-4 w-4 text-primary" />
                 Search ADRs

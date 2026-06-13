@@ -6,7 +6,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { ArrowLeft, AlertTriangle } from "lucide-react";
 
-export const Route = createFileRoute("/_authenticated/app/projects/$projectId_/adrs/new")({
+export const Route = createFileRoute("/_authenticated/projects/$projectId_/adrs/new")({
   head: () => ({ meta: [{ title: "New ADR — Decyra" }] }),
   component: NewAdr,
 });
@@ -59,9 +59,9 @@ function NewAdr() {
       // Navigate to the new ADR
       const adrId = (adr as any)?.id ?? (adr as any)?.adr?.id;
       if (adrId) {
-        navigate({ to: "/app/adrs/$adrId", params: { adrId } });
+        navigate({ to: "/adrs/$adrId", params: { adrId } });
       } else {
-        navigate({ to: "/app/projects/$projectId", params: { projectId } });
+        navigate({ to: "/projects/$projectId", params: { projectId } });
       }
     } catch (err: any) {
       toast.error(err.message ?? "Failed to create ADR");
@@ -73,7 +73,7 @@ function NewAdr() {
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <button
-        onClick={() => navigate({ to: "/app/projects/$projectId", params: { projectId } })}
+        onClick={() => navigate({ to: "/projects/$projectId", params: { projectId } })}
         className="mb-5 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="h-4 w-4" /> Back to project
@@ -94,7 +94,7 @@ function NewAdr() {
             <ul className="list-disc list-inside space-y-1">
               {similarAdrs.map((a: any) => (
                 <li key={a.id}>
-                  <Link to="/app/adrs/$adrId" params={{ adrId: a.id }} target="_blank" className="font-mono hover:underline text-primary font-medium">
+                  <Link to="/adrs/$adrId" params={{ adrId: a.id }} target="_blank" className="font-mono hover:underline text-primary font-medium">
                     {a.full_id}
                   </Link>
                   <span className="ml-1 text-muted-foreground">— {a.title}</span>
@@ -108,7 +108,7 @@ function NewAdr() {
           setForm={setForm}
           busy={busy}
           onSubmit={handleSubmit}
-          onCancel={() => navigate({ to: "/app/projects/$projectId", params: { projectId } })}
+          onCancel={() => navigate({ to: "/projects/$projectId", params: { projectId } })}
           submitLabel="Create draft"
         />
       </div>

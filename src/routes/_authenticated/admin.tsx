@@ -6,7 +6,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { UserPlus, X, Shield, User, Pencil, Key, FolderPlus } from "lucide-react";
 
-export const Route = createFileRoute("/_authenticated/app/admin")({
+export const Route = createFileRoute("/_authenticated/admin")({
   head: () => ({ meta: [{ title: "Admin — Decyra" }] }),
   component: Admin,
 });

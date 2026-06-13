@@ -29,7 +29,7 @@ function AuthPage() {
           if (parts.length === 3) {
             const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
             if (!payload.exp || payload.exp > Math.floor(Date.now() / 1000)) {
-              navigate({ to: "/app" });
+              navigate({ to: "/dashboard" });
               return;
             }
           }
@@ -42,7 +42,7 @@ function AuthPage() {
       // Supabase mode: check existing session
       import("@/integrations/supabase/client").then(({ supabase }) => {
         supabase.auth.getSession().then(({ data }) => {
-          if (data.session) navigate({ to: "/app" });
+          if (data.session) navigate({ to: "/dashboard" });
         });
       });
     }
@@ -56,13 +56,13 @@ function AuthPage() {
         // Local Postgres mode: call our loginLocalFn server function
         const result = await localLoginFn({ data: { email, password } });
         localStorage.setItem("local_auth_token", result.token);
-        navigate({ to: "/app" });
+        navigate({ to: "/dashboard" });
       } else {
         // Supabase mode: unchanged
         const { supabase } = await import("@/integrations/supabase/client");
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        navigate({ to: "/app" });
+        navigate({ to: "/dashboard" });
       }
     } catch (err: any) {
       toast.error(err.message ?? "Authentication failed");
