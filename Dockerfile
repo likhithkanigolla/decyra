@@ -12,6 +12,7 @@ COPY . .
 
 # Force production environment for the Vite/React compiler
 ENV NODE_ENV=production
+ENV VITE_DATABASE_TYPE=postgres
 
 # Build application (generates .output for node-server preset)
 RUN npm run build

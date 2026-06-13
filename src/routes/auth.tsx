@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { loginLocalFn } from "@/lib/api/decyra.functions";
+import { loginLocalFn, signUpLocalFn } from "@/lib/api/decyra.functions";
 import { toast } from "sonner";
 
 const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
@@ -15,9 +15,12 @@ function AuthPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [isSignUp, setIsSignUp] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const localLoginFn = useServerFn(loginLocalFn);
+  const localSignUpFn = useServerFn(signUpLocalFn);
 
   useEffect(() => {
     if (IS_LOCAL) {
@@ -53,15 +56,25 @@ function AuthPage() {
     setLoading(true);
     try {
       if (IS_LOCAL) {
-        // Local Postgres mode: call our loginLocalFn server function
-        const result = await localLoginFn({ data: { email, password } });
-        localStorage.setItem("local_auth_token", result.token);
+        // Local Postgres mode
+        if (isSignUp) {
+          const result = await localSignUpFn({ data: { email, password, fullName } });
+          localStorage.setItem("local_auth_token", result.token);
+        } else {
+          const result = await localLoginFn({ data: { email, password } });
+          localStorage.setItem("local_auth_token", result.token);
+        }
         navigate({ to: "/dashboard" });
       } else {
-        // Supabase mode: unchanged
+        // Supabase mode
         const { supabase } = await import("@/integrations/supabase/client");
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
+        if (isSignUp) {
+          const { error } = await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName } } });
+          if (error) throw error;
+        } else {
+          const { error } = await supabase.auth.signInWithPassword({ email, password });
+          if (error) throw error;
+        }
         navigate({ to: "/dashboard" });
       }
     } catch (err: any) {
@@ -79,9 +92,9 @@ function AuthPage() {
           <span className="text-lg font-semibold">Decyra</span>
         </Link>
         <div className="rounded-xl border border-border bg-card p-6">
-          <h1 className="text-xl font-semibold">Sign in</h1>
+          <h1 className="text-xl font-semibold">{isSignUp ? "Create an account" : "Sign in"}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Welcome back to your governance workspace.
+            {isSignUp ? "Get started with your governance workspace." : "Welcome back to your governance workspace."}
             {IS_LOCAL && (
               <span className="ml-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 text-xs font-medium">
                 Local mode
@@ -90,6 +103,12 @@ function AuthPage() {
           </p>
 
           <form onSubmit={submit} className="mt-5 space-y-3">
+            {isSignUp && (
+              <Field label="Full Name">
+                <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} required
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
+              </Field>
+            )}
             <Field label="Email">
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
                 className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
@@ -100,20 +119,19 @@ function AuthPage() {
             </Field>
             <button disabled={loading} type="submit"
               className="w-full h-10 rounded-md bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
-              {loading ? "Please wait…" : "Sign in"}
+              {loading ? "Please wait…" : (isSignUp ? "Sign up" : "Sign in")}
             </button>
           </form>
 
-          {!IS_LOCAL && (
-            <p className="mt-4 text-center text-xs text-muted-foreground">
-              New users must be created by a platform admin.
-            </p>
-          )}
-          {IS_LOCAL && (
-            <p className="mt-4 text-center text-xs text-muted-foreground">
-              Ask your platform admin to create an account for you.
-            </p>
-          )}
+          <p className="mt-4 text-center text-xs text-muted-foreground">
+            {isSignUp ? "Already have an account?" : "Don't have an account?"}{" "}
+            <button
+              onClick={() => setIsSignUp(!isSignUp)}
+              className="font-medium text-primary hover:underline outline-none"
+            >
+              {isSignUp ? "Sign in" : "Sign up"}
+            </button>
+          </p>
         </div>
       </div>
     </div>
