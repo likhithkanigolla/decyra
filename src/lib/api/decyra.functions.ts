@@ -475,7 +475,22 @@ export const loginLocalFn = createServerFn({ method: "POST" })
     );
     return loginLocal(data.email, data.password);
   });
+// ─── signUpLocal (NEW — local auth endpoint) ───────────────────────────────────
 
+export const signUpLocalFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) =>
+    z.object({ email: z.string().email(), password: z.string().min(8), fullName: z.string().min(1) }).parse(d)
+  )
+  .handler(async ({ data }) => {
+    const dbConfig = getDatabaseConfig();
+    if (!dbConfig.isLocal) {
+      throw new Error("Local sign up is only available in local PostgreSQL mode.");
+    }
+    const { signUpLocal } = await import(
+      "@/integrations/database/local-auth.server"
+    );
+    return signUpLocal(data.email, data.password, data.fullName);
+  });
 // ─── addProjectMember ─────────────────────────────────────────────────────────
 
 export const addProjectMember = createServerFn({ method: "POST" })
