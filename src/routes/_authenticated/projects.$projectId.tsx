@@ -7,7 +7,7 @@ import { Plus, Users, GitBranch, FolderOpen, Trash2, Pencil } from "lucide-react
 import { useState } from "react";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/_authenticated/app/projects/$projectId")({
+export const Route = createFileRoute("/_authenticated/projects/$projectId")({
   head: () => ({ meta: [{ title: "Project — Decyra" }] }),
   component: ProjectDetail,
 });
@@ -34,17 +34,17 @@ function ProjectDetail() {
           <p className="mt-1 text-sm text-muted-foreground">{project.description || "No description."}</p>
         </div>
         <div className="flex items-center gap-2">
-          <Link to="/app/projects/$projectId/graph" params={{ projectId }}
+          <Link to="/projects/$projectId/graph" params={{ projectId }}
             className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent">
             <GitBranch className="h-4 w-4" /> Graph
           </Link>
           {canManage && (
-            <button onClick={() => navigate({ to: "/app/projects/$projectId/edit", params: { projectId } })}
+            <button onClick={() => navigate({ to: "/projects/$projectId/edit", params: { projectId } })}
               className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent">
               <Pencil className="h-4 w-4" /> Edit
             </button>
           )}
-          <button onClick={() => navigate({ to: "/app/projects/$projectId/adrs/new", params: { projectId } })}
+          <button onClick={() => navigate({ to: "/projects/$projectId/adrs/new", params: { projectId } })}
             className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">
             <Plus className="h-4 w-4" /> New ADR
           </button>
@@ -70,7 +70,7 @@ function ProjectDetail() {
         <div className="mt-3 rounded-lg border border-border bg-card divide-y divide-border">
           {adrs.length === 0 && <div className="p-6 text-sm text-muted-foreground">No ADRs yet.</div>}
           {adrs.map((a: any) => (
-            <Link key={a.id} to="/app/adrs/$adrId" params={{ adrId: a.id }}
+            <Link key={a.id} to="/adrs/$adrId" params={{ adrId: a.id }}
               className="flex items-center justify-between px-4 py-3 hover:bg-accent/40">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">

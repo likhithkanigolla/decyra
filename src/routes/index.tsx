@@ -21,7 +21,7 @@ function Landing() {
             <span className="font-semibold tracking-tight">Decyra</span>
           </div>
           <nav className="flex items-center gap-3 text-sm">
-            <Link to="/app" className="text-muted-foreground hover:text-foreground">Open app</Link>
+            <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">Open app</Link>
             <Link to="/auth" className="inline-flex h-9 items-center rounded-md bg-primary px-3 font-medium text-primary-foreground hover:opacity-90">Sign in</Link>
           </nav>
         </div>
@@ -43,7 +43,7 @@ function Landing() {
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link to="/auth" className="inline-flex h-11 items-center rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground hover:opacity-90">Get started</Link>
-            <Link to="/app" className="inline-flex h-11 items-center rounded-md border border-border bg-card px-5 text-sm font-medium hover:bg-accent">Open dashboard</Link>
+            <Link to="/dashboard" className="inline-flex h-11 items-center rounded-md border border-border bg-card px-5 text-sm font-medium hover:bg-accent">Open dashboard</Link>
           </div>
         </div>
 

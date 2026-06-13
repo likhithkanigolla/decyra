@@ -7,7 +7,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
 
-export const Route = createFileRoute("/_authenticated/app/adrs/$adrId_/edit")({
+export const Route = createFileRoute("/_authenticated/adrs/$adrId_/edit")({
   head: () => ({ meta: [{ title: "Edit ADR — Decyra" }] }),
   component: EditAdr,
 });
@@ -63,7 +63,7 @@ function EditAdr() {
       });
       toast.success("ADR updated");
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
-      navigate({ to: "/app/adrs/$adrId", params: { adrId } });
+      navigate({ to: "/adrs/$adrId", params: { adrId } });
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -76,7 +76,7 @@ function EditAdr() {
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <button
-        onClick={() => navigate({ to: "/app/adrs/$adrId", params: { adrId } })}
+        onClick={() => navigate({ to: "/adrs/$adrId", params: { adrId } })}
         className="mb-5 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="h-4 w-4" /> Back to ADR
@@ -92,7 +92,7 @@ function EditAdr() {
         setForm={setForm}
         busy={busy}
         onSubmit={handleSubmit}
-        onCancel={() => navigate({ to: "/app/adrs/$adrId", params: { adrId } })}
+        onCancel={() => navigate({ to: "/adrs/$adrId", params: { adrId } })}
         submitLabel="Save changes"
       />
     </div>

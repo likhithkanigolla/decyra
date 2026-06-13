@@ -16,7 +16,7 @@ import {
   Eye, Rocket, ExternalLink
 } from "lucide-react";
 
-export const Route = createFileRoute("/_authenticated/app/adrs/$adrId")({
+export const Route = createFileRoute("/_authenticated/adrs/$adrId")({
   head: () => ({ meta: [{ title: "ADR — Decyra" }] }),
   component: AdrDetail,
 });
@@ -168,14 +168,14 @@ function AdrDetail() {
         {/* Back + edit */}
         <div className="flex items-center justify-between mb-5">
           <button
-            onClick={() => navigate({ to: "/app/projects/$projectId", params: { projectId: adr.project_id } })}
+            onClick={() => navigate({ to: "/projects/$projectId", params: { projectId: adr.project_id } })}
             className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-4 w-4" />
             Back to project
           </button>
           <Link
-            to="/app/adrs/$adrId/edit" params={{ adrId }}
+            to="/adrs/$adrId/edit" params={{ adrId }}
             className="inline-flex items-center gap-1.5 h-8 rounded-md border border-border bg-card px-3 text-xs hover:bg-accent"
           >
             <Edit className="h-3.5 w-3.5" /> Edit
@@ -494,7 +494,7 @@ function AdrDetail() {
                   <div key={r.id} className="flex items-center gap-2 text-xs p-2 rounded-md bg-accent/50">
                     <div className="flex-1 min-w-0">
                       <div className="text-[10px] text-muted-foreground">{REL_TYPE_LABELS[r.rel_type]}</div>
-                      <Link to="/app/adrs/$adrId" params={{ adrId: otherId }}
+                      <Link to="/adrs/$adrId" params={{ adrId: otherId }}
                         className="truncate text-primary hover:underline block">{otherFullId}</Link>
                     </div>
                     <button onClick={() => removeRel(r.id)} className="text-muted-foreground hover:text-destructive shrink-0">
@@ -533,7 +533,7 @@ function AdrDetail() {
 
         {/* Graph link */}
         <Link
-          to="/app/projects/$projectId/graph" params={{ projectId: adr.project_id }}
+          to="/projects/$projectId/graph" params={{ projectId: adr.project_id }}
           className="flex items-center gap-2 rounded-lg border border-border bg-card p-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
         >
           <GitBranch className="h-4 w-4 shrink-0" />

@@ -65,7 +65,7 @@ function Shell() {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        navigate({ to: "/app/search" });
+        navigate({ to: "/search" });
       }
     }
     window.addEventListener("keydown", onKey);
@@ -89,10 +89,10 @@ function Shell() {
   }
 
   const nav = [
-    { to: "/app", label: "Dashboard", icon: LayoutDashboard, exact: true },
-    { to: "/app/projects", label: "Projects", icon: FolderKanban },
-    { to: "/app/adrs", label: "All ADRs", icon: FileText },
-    { to: "/app/search", label: "Search", icon: Search },
+    { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, exact: true },
+    { to: "/projects", label: "Projects", icon: FolderKanban },
+    { to: "/adrs", label: "All ADRs", icon: FileText },
+    { to: "/search", label: "Search", icon: Search },
   ];
 
   const isActive = (n: typeof nav[0]) =>
@@ -106,7 +106,7 @@ function Shell() {
       {/* Sidebar */}
       <aside className="w-64 shrink-0 border-r border-sidebar-border bg-sidebar flex flex-col h-screen sticky top-0">
         {/* Logo */}
-        <Link to="/app" className="flex h-14 items-center gap-2.5 px-4 border-b border-sidebar-border shrink-0">
+        <Link to="/dashboard" className="flex h-14 items-center gap-2.5 px-4 border-b border-sidebar-border shrink-0">
           <div className="grid h-7 w-7 place-items-center rounded-lg bg-primary text-primary-foreground font-bold text-sm shadow-sm">
             D
           </div>
@@ -117,7 +117,7 @@ function Shell() {
         {/* Quick search */}
         <div className="px-3 py-2 shrink-0">
           <button
-            onClick={() => navigate({ to: "/app/search" })}
+            onClick={() => navigate({ to: "/search" })}
             className="w-full flex items-center gap-2 h-8 rounded-md bg-sidebar-accent/40 border border-sidebar-border px-3 text-xs text-sidebar-foreground/50 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground transition-colors"
           >
             <Search className="h-3.5 w-3.5" />
@@ -131,11 +131,10 @@ function Shell() {
           <p className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/40">Navigation</p>
           {nav.map((n) => (
             <Link key={n.to} to={n.to as any}
-              className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
-                isActive(n)
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-              }`}>
+              className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${isActive(n)
+                ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                }`}>
               <n.icon className="h-4 w-4 shrink-0" />
               {n.label}
               {isActive(n) && <ChevronRight className="h-3 w-3 ml-auto opacity-50" />}
@@ -145,12 +144,11 @@ function Shell() {
           {me?.isAdmin && (
             <>
               <p className="px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/40">Admin</p>
-              <Link to="/app/admin"
-                className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
-                  pathname.startsWith("/app/admin")
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                }`}>
+              <Link to="/admin"
+                className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${pathname.startsWith("/admin")
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                  }`}>
                 <Shield className="h-4 w-4 shrink-0" />
                 Platform Admin
               </Link>
@@ -163,12 +161,11 @@ function Shell() {
               <p className="px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/40">My Projects</p>
               {(me?.memberships ?? []).slice(0, 5).map((m: any) => (
                 <Link key={m.project_id}
-                  to="/app/projects/$projectId" params={{ projectId: m.project_id }}
-                  className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
-                    pathname === `/app/projects/${m.project_id}`
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                      : "text-sidebar-foreground/60 hover:bg-sidebar-accent/40 hover:text-sidebar-foreground"
-                  }`}>
+                  to="/projects/$projectId" params={{ projectId: m.project_id }}
+                  className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${pathname === `/projects/${m.project_id}`
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                    : "text-sidebar-foreground/60 hover:bg-sidebar-accent/40 hover:text-sidebar-foreground"
+                    }`}>
                   <div className="h-4 w-4 shrink-0 grid place-items-center rounded bg-primary/20 text-primary text-[8px] font-bold">
                     {m.projects?.code?.slice(0, 2)}
                   </div>
@@ -192,7 +189,7 @@ function Shell() {
           </div>
 
           {/* User */}
-          <Link to="/app/profile"
+          <Link to="/profile"
             className="flex items-center gap-2.5 rounded-md px-2 py-2 hover:bg-sidebar-accent/50 transition-colors group">
             <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary/15 text-primary text-xs font-semibold border border-primary/20">
               {initials}

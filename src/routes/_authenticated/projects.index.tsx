@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { listProjects, getMyContext } from "@/lib/api/decyra.functions";
 import { Plus, FolderKanban } from "lucide-react";
 
-export const Route = createFileRoute("/_authenticated/app/projects/")({
+export const Route = createFileRoute("/_authenticated/projects/")({
   head: () => ({ meta: [{ title: "Projects — Decyra" }] }),
   component: ProjectsList,
 });
@@ -23,7 +23,7 @@ function ProjectsList() {
           <p className="text-sm text-muted-foreground mt-1">All projects you have access to.</p>
         </div>
         {me?.isAdmin && (
-          <Link to="/app/projects/new" className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">
+          <Link to="/projects/new" className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">
             <Plus className="h-4 w-4" /> New project
           </Link>
         )}
@@ -38,7 +38,7 @@ function ProjectsList() {
           </div>
         )}
         {(projects ?? []).map((p: any) => (
-          <Link key={p.id} to="/app/projects/$projectId" params={{ projectId: p.id }}
+          <Link key={p.id} to="/projects/$projectId" params={{ projectId: p.id }}
             className="rounded-lg border border-border bg-card p-5 hover:border-primary/40 transition">
             <div className="flex items-center gap-2">
               <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-mono font-semibold">{p.code}</span>

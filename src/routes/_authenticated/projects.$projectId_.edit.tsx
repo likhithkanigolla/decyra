@@ -6,7 +6,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
 
-export const Route = createFileRoute("/_authenticated/app/projects/$projectId_/edit")({
+export const Route = createFileRoute("/_authenticated/projects/$projectId_/edit")({
   head: () => ({ meta: [{ title: "Edit project — Decyra" }] }),
   component: EditProject,
 });
@@ -76,7 +76,7 @@ function EditProject() {
       });
       toast.success("Project updated");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
-      navigate({ to: "/app/projects/$projectId", params: { projectId } });
+      navigate({ to: "/projects/$projectId", params: { projectId } });
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -91,7 +91,7 @@ function EditProject() {
   return (
     <div className="p-8 max-w-2xl mx-auto">
       <button
-        onClick={() => navigate({ to: "/app/projects/$projectId", params: { projectId } })}
+        onClick={() => navigate({ to: "/projects/$projectId", params: { projectId } })}
         className="mb-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="h-4 w-4" />
@@ -180,7 +180,7 @@ function EditProject() {
         <div className="flex justify-end gap-2 pt-2">
           <button
             type="button"
-            onClick={() => navigate({ to: "/app/projects/$projectId", params: { projectId } })}
+            onClick={() => navigate({ to: "/projects/$projectId", params: { projectId } })}
             className="h-10 rounded-md border border-border bg-card px-4 text-sm hover:bg-accent"
           >
             Cancel
