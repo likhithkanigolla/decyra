@@ -477,6 +477,17 @@ export const loginLocalFn = createServerFn({ method: "POST" })
   });
 // ─── signUpLocal (NEW — local auth endpoint) ───────────────────────────────────
 
+export const checkIsFirstRunFn = createServerFn({ method: "GET" })
+  .handler(async () => {
+    const dbConfig = getDatabaseConfig();
+    if (dbConfig.isLocal) {
+      const { queryOne } = await import("@/integrations/database/postgres");
+      const result = await queryOne<{ count: string }>("SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'");
+      return parseInt(result?.count || "0", 10) === 0;
+    }
+    return false; // For Supabase mode, we don't expose UI signups to prevent API abuse
+  });
+
 export const signUpLocalFn = createServerFn({ method: "POST" })
   .validator((d: unknown) =>
     z.object({ email: z.string().email(), password: z.string().min(8), fullName: z.string().min(1) }).parse(d)
@@ -486,6 +497,12 @@ export const signUpLocalFn = createServerFn({ method: "POST" })
     if (!dbConfig.isLocal) {
       throw new Error("Local sign up is only available in local PostgreSQL mode.");
     }
+    const { queryOne } = await import("@/integrations/database/postgres");
+    const result = await queryOne<{ count: string }>("SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'");
+    if (parseInt(result?.count || "0", 10) !== 0) {
+      throw new Error("Security Error: An admin already exists. Public signups are disabled.");
+    }
+
     const { signUpLocal } = await import(
       "@/integrations/database/local-auth.server"
     );
