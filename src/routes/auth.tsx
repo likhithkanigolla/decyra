@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { loginLocalFn, signUpLocalFn, checkIsFirstRunFn } from "@/lib/api/decyra.functions";
 import { toast } from "sonner";
@@ -20,6 +21,7 @@ function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [isFirstRun, setIsFirstRun] = useState(false);
 
+  const queryClient = useQueryClient();
   const localLoginFn = useServerFn(loginLocalFn);
   const localSignUpFn = useServerFn(signUpLocalFn);
   const checkFirstRun = useServerFn(checkIsFirstRunFn);
@@ -70,13 +72,15 @@ function AuthPage() {
           const result = await localLoginFn({ data: { email, password } });
           localStorage.setItem("local_auth_token", result.token);
         }
-        window.location.href = "/dashboard";
+        queryClient.clear();
+        navigate({ to: "/dashboard" });
       } else {
         // Supabase mode
         const { supabase } = await import("@/integrations/supabase/client");
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        window.location.href = "/dashboard";
+        queryClient.clear();
+        navigate({ to: "/dashboard" });
       }
     } catch (err: any) {
       toast.error(err.message ?? "Authentication failed");

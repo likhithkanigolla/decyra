@@ -198,6 +198,22 @@ export async function runMigrations(migrationsDir?: string): Promise<void> {
   }
 
   console.log('✅ All migrations completed successfully');
+  
+  // Auto-seed default admin if there are no admins
+  try {
+    const roleCheck = await query<{ count: string }>("SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'");
+    if (parseInt(roleCheck.rows[0]?.count || '0', 10) === 0) {
+      console.log('🌱 No admin found. Seeding default admin...');
+      const { createLocalUser } = await import('./local-auth.server');
+      const email = process.env.ADMIN_EMAIL || 'admin@localhost.com';
+      const password = process.env.ADMIN_PASSWORD || 'admin1234';
+      const fullName = process.env.ADMIN_NAME || 'Platform Admin';
+      const user = await createLocalUser(email, password, fullName, 'admin');
+      console.log(`✅ Default admin created: ${user.email} / ${password}`);
+    }
+  } catch (err: any) {
+    console.error('⚠️ Failed to seed default admin:', err.message);
+  }
 }
 
 /**
