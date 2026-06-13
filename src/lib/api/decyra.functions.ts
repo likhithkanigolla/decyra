@@ -499,14 +499,17 @@ export const signUpLocalFn = createServerFn({ method: "POST" })
     }
     const { queryOne } = await import("@/integrations/database/postgres");
     const result = await queryOne<{ count: string }>("SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'");
-    if (parseInt(result?.count || "0", 10) !== 0) {
+    const isFirstRun = parseInt(result?.count || "0", 10) === 0;
+    
+    if (!isFirstRun) {
       throw new Error("Security Error: An admin already exists. Public signups are disabled.");
     }
 
     const { signUpLocal } = await import(
       "@/integrations/database/local-auth.server"
     );
-    return signUpLocal(data.email, data.password, data.fullName);
+    // Explicitly grant admin role to the first user
+    return signUpLocal(data.email, data.password, data.fullName, "admin");
   });
 // ─── addProjectMember ─────────────────────────────────────────────────────────
 

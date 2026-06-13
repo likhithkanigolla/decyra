@@ -115,21 +115,12 @@ export async function loginLocal(
 export async function signUpLocal(
   email: string,
   password: string,
-  fullName: string
+  fullName: string,
+  role: 'admin' | 'member' = 'member'
 ): Promise<{ token: string; user: LocalUser }> {
-  // The database trigger will automatically assign the 'admin' role if this is the first user.
-  // Otherwise, it assigns the 'member' role.
-  const user = await createLocalUser(email, password, fullName, 'member');
-  
-  // Re-fetch the actual role from the database since the trigger might have upgraded it to 'admin'.
-  const finalRoleRow = await queryOne<{ role: string }>(
-    'SELECT role FROM public.user_roles WHERE user_id = $1 AND role = $2',
-    [user.id, 'admin']
-  );
-  
-  const finalRole = finalRoleRow ? 'admin' : 'member';
-  const token = signJwt({ sub: user.id, email: user.email, role: finalRole });
-  return { token, user: { ...user, role: finalRole } };
+  const user = await createLocalUser(email, password, fullName, role);
+  const token = signJwt({ sub: user.id, email: user.email, role: user.role });
+  return { token, user };
 }
 
 /**
