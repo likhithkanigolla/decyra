@@ -19,6 +19,7 @@ function AuthPage() {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
   const [isSignUp, setIsSignUp] = useState(false);
+  const [isForgotPass, setIsForgotPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isFirstRun, setIsFirstRun] = useState(false);
 
@@ -65,6 +66,28 @@ function AuthPage() {
     e.preventDefault();
     setLoading(true);
     try {
+      if (isForgotPass) {
+        if (IS_LOCAL) {
+          toast.error("Password resets are disabled in local development mode. Please contact your database administrator or use the reset-password script.");
+          setLoading(false);
+          return;
+        }
+        let loginEmail = identifier;
+        if (!loginEmail.includes("@")) {
+          const res = await lookupEmailByUsername({ data: { username: identifier } });
+          loginEmail = res.email;
+        }
+        const { supabase } = await import("@/integrations/supabase/client");
+        const { error } = await supabase.auth.resetPasswordForEmail(loginEmail, {
+          redirectTo: `${window.location.origin}/update-password`,
+        });
+        if (error) throw error;
+        toast.success("Password reset email sent! Check your inbox.");
+        setIsForgotPass(false);
+        setLoading(false);
+        return;
+      }
+
       if (IS_LOCAL) {
         // Local Postgres mode
         if (isSignUp && isFirstRun) {
@@ -104,9 +127,13 @@ function AuthPage() {
           <span className="text-lg font-semibold">Decyra</span>
         </Link>
         <div className="rounded-xl border border-border bg-card p-6">
-          <h1 className="text-xl font-semibold">{(isSignUp && isFirstRun) ? "Platform Setup" : "Sign in"}</h1>
+          <h1 className="text-xl font-semibold">
+            {isForgotPass ? "Reset Password" : (isSignUp && isFirstRun) ? "Platform Setup" : "Sign in"}
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {(isSignUp && isFirstRun) ? "Create the initial administrator account." : "Welcome back to your governance workspace."}
+            {isForgotPass 
+              ? "Enter your email or username to receive a reset link." 
+              : (isSignUp && isFirstRun) ? "Create the initial administrator account." : "Welcome back to your governance workspace."}
             {IS_LOCAL && (
               <span className="ml-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 text-xs font-medium">
                 Local mode
@@ -114,8 +141,14 @@ function AuthPage() {
             )}
           </p>
 
+          {isForgotPass && IS_LOCAL && (
+            <div className="mt-4 p-3 rounded bg-amber-500/10 border border-amber-500/20 text-sm text-amber-600 dark:text-amber-400">
+              Password resets are disabled in local development mode. Please contact your database administrator or use the `npm run reset-password` script.
+            </div>
+          )}
+
           <form onSubmit={submit} className="mt-5 space-y-3">
-            {(isSignUp && isFirstRun) && (
+            {!isForgotPass && (isSignUp && isFirstRun) && (
               <>
                 <Field label="Full Name">
                   <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} required
@@ -127,21 +160,38 @@ function AuthPage() {
                 </Field>
               </>
             )}
-            <Field label={isSignUp ? "Email" : "Email or Username"}>
-              <input type={isSignUp ? "email" : "text"} value={identifier} onChange={(e) => setIdentifier(e.target.value)} required
+            <Field label={isForgotPass ? "Email or Username" : isSignUp ? "Email" : "Email or Username"}>
+              <input type={!isForgotPass && isSignUp ? "email" : "text"} value={identifier} onChange={(e) => setIdentifier(e.target.value)} required
                 className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
             </Field>
-            <Field label="Password">
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8}
-                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
-            </Field>
+            {!isForgotPass && (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-medium text-muted-foreground">Password</label>
+                  {(!isFirstRun || !isSignUp) && (
+                    <button type="button" onClick={() => setIsForgotPass(true)} className="text-[10px] text-primary hover:underline outline-none">
+                      Forgot password?
+                    </button>
+                  )}
+                </div>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8}
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+            )}
             <button disabled={loading} type="submit"
-              className="w-full h-10 rounded-md bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
-              {loading ? "Please wait…" : ((isSignUp && isFirstRun) ? "Complete Setup" : "Sign in")}
+              className="w-full h-10 mt-2 rounded-md bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
+              {loading ? "Please wait…" : isForgotPass ? "Send Reset Link" : ((isSignUp && isFirstRun) ? "Complete Setup" : "Sign in")}
             </button>
           </form>
 
-          {(isFirstRun && IS_LOCAL) ? (
+          {isForgotPass ? (
+            <p className="mt-4 text-center text-xs text-muted-foreground">
+              Remember your password?{" "}
+              <button type="button" onClick={() => setIsForgotPass(false)} className="font-medium text-primary hover:underline outline-none">
+                Sign in
+              </button>
+            </p>
+          ) : (isFirstRun && IS_LOCAL) ? (
             <p className="mt-4 text-center text-xs text-muted-foreground">
               {isSignUp ? "Already set up?" : "Initial setup required."}{" "}
               <button
