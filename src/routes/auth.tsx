@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { loginLocalFn, signUpLocalFn, checkIsFirstRunFn } from "@/lib/api/decyra.functions";
+import { loginLocalFn, signUpLocalFn, checkIsFirstRunFn, lookupEmailByUsernameFn } from "@/lib/api/decyra.functions";
 import { toast } from "sonner";
 
 const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
@@ -14,9 +14,10 @@ export const Route = createFileRoute("/auth")({
 
 function AuthPage() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
   const [isSignUp, setIsSignUp] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isFirstRun, setIsFirstRun] = useState(false);
@@ -25,6 +26,7 @@ function AuthPage() {
   const localLoginFn = useServerFn(loginLocalFn);
   const localSignUpFn = useServerFn(signUpLocalFn);
   const checkFirstRun = useServerFn(checkIsFirstRunFn);
+  const lookupEmailByUsername = useServerFn(lookupEmailByUsernameFn);
 
   useEffect(() => {
     checkFirstRun().then(setIsFirstRun).catch(() => setIsFirstRun(false));
@@ -66,18 +68,23 @@ function AuthPage() {
       if (IS_LOCAL) {
         // Local Postgres mode
         if (isSignUp && isFirstRun) {
-          const result = await localSignUpFn({ data: { email, password, fullName } });
+          const result = await localSignUpFn({ data: { email: identifier, password, fullName, username: username || undefined } });
           localStorage.setItem("local_auth_token", result.token);
         } else {
-          const result = await localLoginFn({ data: { email, password } });
+          const result = await localLoginFn({ data: { identifier, password } });
           localStorage.setItem("local_auth_token", result.token);
         }
         queryClient.clear();
         navigate({ to: "/dashboard" });
       } else {
         // Supabase mode
+        let loginEmail = identifier;
+        if (!loginEmail.includes("@")) {
+          const res = await lookupEmailByUsername({ data: { username: identifier } });
+          loginEmail = res.email;
+        }
         const { supabase } = await import("@/integrations/supabase/client");
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { error } = await supabase.auth.signInWithPassword({ email: loginEmail, password });
         if (error) throw error;
         queryClient.clear();
         navigate({ to: "/dashboard" });
@@ -109,13 +116,19 @@ function AuthPage() {
 
           <form onSubmit={submit} className="mt-5 space-y-3">
             {(isSignUp && isFirstRun) && (
-              <Field label="Full Name">
-                <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} required
-                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
-              </Field>
+              <>
+                <Field label="Full Name">
+                  <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} required
+                    className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
+                </Field>
+                <Field label="Username">
+                  <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} required minLength={3}
+                    className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
+                </Field>
+              </>
             )}
-            <Field label="Email">
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+            <Field label={isSignUp ? "Email" : "Email or Username"}>
+              <input type={isSignUp ? "email" : "text"} value={identifier} onChange={(e) => setIdentifier(e.target.value)} required
                 className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
             </Field>
             <Field label="Password">
