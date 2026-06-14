@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Install dependencies using npm
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm install
 
 # Copy application source
 COPY . .
@@ -27,7 +27,7 @@ WORKDIR /app
 
 # Install ONLY production dependencies for a lightweight image
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Copy built assets and necessary runtime files
 COPY --from=builder /app/.output ./.output
