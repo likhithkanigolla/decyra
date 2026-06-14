@@ -1,9 +1,9 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { getProject, listProfiles, addProjectMember, removeProjectMember } from "@/lib/api/decyra.functions";
+import { getProject, listProfiles, addProjectMember, removeProjectMember, generateDemoAdrFn } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
-import { Plus, Users, GitBranch, FolderOpen, Trash2, Pencil } from "lucide-react";
+import { Plus, Users, GitBranch, FolderOpen, Trash2, Pencil, FileText } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -17,10 +17,27 @@ function ProjectDetail() {
   const fn = useServerFn(getProject);
   const { data, refetch } = useQuery({ queryKey: ["project", projectId], queryFn: () => fn({ data: { id: projectId } }) });
   const navigate = useNavigate();
+  const generateDemoFn = useServerFn(generateDemoAdrFn);
+  const [filter, setFilter] = useState("");
+  const [generatingDemo, setGeneratingDemo] = useState(false);
 
   if (!data) return <div className="p-8 text-sm text-muted-foreground">Loading…</div>;
   const { project, members, adrs, myRole, isAdmin } = data;
   const canManage = isAdmin || myRole === "project_admin";
+  const filteredAdrs = filter ? adrs.filter((a: any) => a.status === filter) : adrs;
+
+  async function generateDemoAdr() {
+    setGeneratingDemo(true);
+    try {
+      await generateDemoFn({ data: { project_id: projectId } });
+      toast.success("Demo ADR generated");
+      refetch();
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to generate demo ADR");
+    } finally {
+      setGeneratingDemo(false);
+    }
+  }
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
@@ -66,23 +83,56 @@ function ProjectDetail() {
       </div>
 
       <section className="mt-10">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">ADRs</h2>
-        <div className="mt-3 rounded-lg border border-border bg-card divide-y divide-border">
-          {adrs.length === 0 && <div className="p-6 text-sm text-muted-foreground">No ADRs yet.</div>}
-          {adrs.map((a: any) => (
-            <Link key={a.id} to="/adrs/$adrId" params={{ adrId: a.id }}
-              className="flex items-center justify-between px-4 py-3 hover:bg-accent/40">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs text-muted-foreground">{a.full_id}</span>
-                  <StatusBadge status={a.status} />
-                </div>
-                <div className="mt-0.5 truncate font-medium">{a.title}</div>
-              </div>
-              <span className="text-xs text-muted-foreground ml-4 shrink-0">{new Date(a.updated_at).toLocaleDateString()}</span>
-            </Link>
-          ))}
+        <div className="flex items-end justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">ADRs</h2>
+          {adrs.length > 0 && (
+            <select value={filter} onChange={e => setFilter(e.target.value)} className="h-8 rounded-md border border-input bg-background px-3 text-xs">
+              <option value="">All statuses</option>
+              <option value="draft">Draft</option>
+              <option value="under_review">Under Review</option>
+              <option value="approved">Approved</option>
+              <option value="published">Published</option>
+              <option value="superseded">Superseded</option>
+            </select>
+          )}
         </div>
+        
+        {adrs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center p-12 text-center border border-dashed border-border rounded-lg bg-card mt-3">
+            <div className="h-12 w-12 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-4">
+              <FileText className="h-6 w-6" />
+            </div>
+            <h3 className="text-lg font-medium text-foreground">No Architecture Decisions</h3>
+            <p className="mt-2 text-sm text-muted-foreground max-w-sm">
+              Get started by documenting your first architectural decision, or generate an example to see how it works.
+            </p>
+            <div className="mt-6 flex items-center gap-3">
+              <button onClick={() => navigate({ to: "/projects/$projectId/adrs/new", params: { projectId } })} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90">
+                <Plus className="h-4 w-4" /> Create ADR
+              </button>
+              <button onClick={generateDemoAdr} disabled={generatingDemo} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent disabled:opacity-50">
+                {generatingDemo ? "Generating..." : "Generate Example ADR"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-3 rounded-lg border border-border bg-card divide-y divide-border">
+            {filteredAdrs.length === 0 && <div className="p-6 text-sm text-muted-foreground">No ADRs match the selected filter.</div>}
+            {filteredAdrs.map((a: any) => (
+              <Link key={a.id} to="/adrs/$adrId" params={{ adrId: a.id }}
+                className="flex items-center justify-between px-4 py-3 hover:bg-accent/40">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-muted-foreground">{a.full_id}</span>
+                    <StatusBadge status={a.status} />
+                  </div>
+                  <div className="mt-0.5 truncate font-medium">{a.title}</div>
+                </div>
+                <span className="text-xs text-muted-foreground ml-4 shrink-0">{new Date(a.updated_at).toLocaleDateString()}</span>
+              </Link>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="mt-10">

@@ -53,8 +53,26 @@ function Dashboard() {
 
   const userName = me?.profile?.full_name?.split(" ")[0] ?? "there";
 
+  if (data?.projectsCount === 0) {
+    return (
+      <div className="p-8 max-w-4xl mx-auto flex flex-col items-center justify-center min-h-[70vh] text-center animate-in fade-in zoom-in duration-500">
+        <div className="h-20 w-20 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-6 ring-8 ring-primary/5">
+          <FolderKanban className="h-10 w-10" />
+        </div>
+        <h1 className="text-3xl font-bold tracking-tight mb-3">Welcome to Decyra!</h1>
+        <p className="text-muted-foreground max-w-md mb-8 leading-relaxed">
+          Your new home for Architecture Governance. Get started by creating your first project to organize and track your Architecture Decision Records (ADRs).
+        </p>
+        <Link to="/projects/new" className="h-11 inline-flex items-center gap-2 rounded-md bg-primary px-8 text-sm font-medium text-primary-foreground hover:opacity-90 shadow-sm transition-opacity">
+          <FolderKanban className="h-4 w-4" />
+          Create Your First Project
+        </Link>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-8 max-w-6xl mx-auto">
+    <div className="p-8 max-w-6xl mx-auto animate-in fade-in duration-500">
       {/* Header */}
       <div className="flex items-end justify-between mb-8">
         <div>

@@ -592,6 +592,94 @@ export const removeProjectMember = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// ─── generateDemoAdrFn (NEW — Onboarding) ───────────────────────────────────
+
+export const generateDemoAdrFn = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    // Get the next sequence number
+    let nextSeq = 1;
+    if (isDatabaseLocal) {
+      const { queryOne } = await import("@/integrations/database/postgres");
+      const res = await queryOne<{ count: string }>(
+        "SELECT COUNT(*) FROM public.adrs WHERE project_id = $1",
+        [data.project_id]
+      );
+      nextSeq = parseInt(res?.count || "0", 10) + 1;
+    } else {
+      const { count } = await supabase
+        .from("adrs")
+        .select("*", { count: "exact", head: true })
+        .eq("project_id", data.project_id);
+      nextSeq = (count ?? 0) + 1;
+    }
+
+    const demoAdr = {
+      project_id: data.project_id,
+      sequence_num: nextSeq,
+      title: "Adopt Event-Driven Architecture for User Notifications",
+      status: "approved",
+      author_id: userId,
+      tags: ["messaging", "kafka", "notifications"],
+      context: "Currently, our notification system uses synchronous HTTP calls between microservices to trigger emails and push notifications. This tightly couples the services, leading to cascading failures when the notification service is down or slow, and makes it difficult to scale the core transaction services during peak load.\\n\\nWe need a way to decouple these services to improve overall system resilience and responsiveness.",
+      decision: "We will adopt an **Event-Driven Architecture** using **Apache Kafka** as our central message broker for all user notifications.\\n\\nServices will publish `UserActionCompleted` events to a Kafka topic. The Notification Service will act as a consumer, picking up these events asynchronously and processing the required emails or push notifications.",
+      consequences: "### Positive\\n- **Decoupling**: Core services no longer depend on the uptime of the Notification Service.\\n- **Resilience**: Spikes in traffic won't crash the notification pipeline, as messages will queue up safely.\\n\\n### Negative\\n- **Complexity**: Introduces a new piece of infrastructure (Kafka) that we must maintain and monitor.\\n- **Eventual Consistency**: Users might experience a slight delay in receiving emails compared to synchronous calls.",
+      alternatives: "- **RabbitMQ**: Evaluated but rejected because we anticipate very high throughput and want to leverage Kafka's replayability feature for auditing.\\n- **Redis Pub/Sub**: Rejected because messages are not persistent, and we cannot risk losing notifications if the consumer crashes.",
+      design_changes: {
+        api_changes: "Removed `POST /internal/notifications` endpoint from the Notification Service.",
+        workflow_changes: "Checkout workflow no longer waits for email confirmation before returning `200 OK` to the user.",
+        service_changes: "Added Kafka Producer library to `BillingService` and `AuthService`.",
+        infrastructure_changes: "Provisioned a managed Confluent Kafka cluster.",
+        data_model_changes: ""
+      },
+      major_impacts: {
+        operational: "Need to add Datadog alerts for Kafka consumer lag.",
+        testing: "End-to-end tests must be updated to poll for asynchronous email delivery.",
+        security: "Need to configure mTLS for Kafka clients.",
+        documentation: "Update the Developer Guide with instructions on how to produce and consume events locally using Docker Compose.",
+        scalability: "The notification service can now be scaled horizontally based on the size of the Kafka consumer group."
+      },
+      references_data: {
+        pull_requests: [],
+        git_commits: [],
+        design_docs: ["https://wiki.example.com/architecture/event-driven"],
+        wiki_pages: [],
+        external: ["https://kafka.apache.org/documentation/"]
+      }
+    };
+
+    if (isDatabaseLocal) {
+      const { queryOne } = await import("@/integrations/database/postgres");
+      const inserted = await queryOne<{ id: string }>(
+        `INSERT INTO public.adrs (
+           project_id, sequence_num, title, status, author_id, tags,
+           context, decision, consequences, alternatives,
+           design_changes, major_impacts, references_data
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         RETURNING id`,
+        [
+          demoAdr.project_id, demoAdr.sequence_num, demoAdr.title, demoAdr.status, demoAdr.author_id,
+          JSON.stringify(demoAdr.tags), demoAdr.context, demoAdr.decision, demoAdr.consequences, demoAdr.alternatives,
+          JSON.stringify(demoAdr.design_changes), JSON.stringify(demoAdr.major_impacts), JSON.stringify(demoAdr.references_data)
+        ]
+      );
+      return inserted;
+    }
+
+    const { data: inserted, error } = await supabase
+      .from("adrs")
+      .insert(demoAdr)
+      .select()
+      .single();
+      
+    if (error) throw new Error(error.message);
+    return inserted;
+  });
+
 // ─── createAdr ────────────────────────────────────────────────────────────────
 
 export const createAdr = createServerFn({ method: "POST" })
