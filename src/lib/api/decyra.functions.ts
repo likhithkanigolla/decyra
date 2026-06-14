@@ -401,6 +401,7 @@ export const createUser = createServerFn({ method: "POST" })
         email: z.string().email(),
         password: z.string().min(8),
         full_name: z.string().min(1).max(200),
+        username: z.string().min(3).max(30).optional(),
         role: z.enum(["admin", "member"]).default("member"),
       })
       .parse(d)
@@ -424,7 +425,8 @@ export const createUser = createServerFn({ method: "POST" })
         data.email,
         data.password,
         data.full_name,
-        data.role
+        data.role,
+        data.username
       );
       return user;
     }
@@ -444,7 +446,7 @@ export const createUser = createServerFn({ method: "POST" })
     const { data: newUser, error } = await supabaseAdmin.auth.admin.createUser({
       email: data.email,
       password: data.password,
-      user_metadata: { full_name: data.full_name },
+      user_metadata: { full_name: data.full_name, username: data.username },
       email_confirm: true,
     });
     if (error) throw new Error(error.message);
@@ -456,14 +458,14 @@ export const createUser = createServerFn({ method: "POST" })
         .upsert({ user_id: newUser.user.id, role: "admin" }, { onConflict: "user_id,role" });
     }
 
-    return { id: newUser.user.id, email: data.email, full_name: data.full_name, role: data.role };
+    return { id: newUser.user.id, email: data.email, username: data.username, full_name: data.full_name, role: data.role };
   });
 
 // ─── loginLocal (NEW — local auth endpoint) ───────────────────────────────────
 
 export const loginLocalFn = createServerFn({ method: "POST" })
   .validator((d: unknown) =>
-    z.object({ email: z.string().email(), password: z.string() }).parse(d)
+    z.object({ identifier: z.string().min(1), password: z.string() }).parse(d)
   )
   .handler(async ({ data }) => {
     const dbConfig = getDatabaseConfig();
@@ -473,8 +475,31 @@ export const loginLocalFn = createServerFn({ method: "POST" })
     const { loginLocal } = await import(
       "@/integrations/database/local-auth.server"
     );
-    return loginLocal(data.email, data.password);
+    return loginLocal(data.identifier, data.password);
   });
+
+// ─── lookupEmailByUsernameFn (NEW — Supabase mode lookup) ─────────────────────
+
+export const lookupEmailByUsernameFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => z.object({ username: z.string() }).parse(d))
+  .handler(async ({ data }) => {
+    const dbConfig = getDatabaseConfig();
+    if (dbConfig.isLocal) {
+      throw new Error("Only used in Supabase mode.");
+    }
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("email")
+      .eq("username", data.username.toLowerCase().trim())
+      .maybeSingle();
+      
+    if (!profile || !profile.email) {
+      throw new Error("Username not found");
+    }
+    return { email: profile.email };
+  });
+
 // ─── signUpLocal (NEW — local auth endpoint) ───────────────────────────────────
 
 export const checkIsFirstRunFn = createServerFn({ method: "GET" })
@@ -490,7 +515,7 @@ export const checkIsFirstRunFn = createServerFn({ method: "GET" })
 
 export const signUpLocalFn = createServerFn({ method: "POST" })
   .validator((d: unknown) =>
-    z.object({ email: z.string().email(), password: z.string().min(8), fullName: z.string().min(1) }).parse(d)
+    z.object({ email: z.string().email(), password: z.string().min(8), fullName: z.string().min(1), username: z.string().min(3).max(30).optional() }).parse(d)
   )
   .handler(async ({ data }) => {
     const dbConfig = getDatabaseConfig();
@@ -509,7 +534,7 @@ export const signUpLocalFn = createServerFn({ method: "POST" })
       "@/integrations/database/local-auth.server"
     );
     // Explicitly grant admin role to the first user
-    return signUpLocal(data.email, data.password, data.fullName, "admin");
+    return signUpLocal(data.email, data.password, data.fullName, "admin", data.username);
   });
 // ─── addProjectMember ─────────────────────────────────────────────────────────
 

@@ -82,6 +82,7 @@ export function verifyJwt(token: string): Record<string, unknown> | null {
 export interface LocalUser {
   id: string;
   email: string;
+  username?: string | null;
   full_name: string | null;
   role: string;
 }
@@ -92,21 +93,21 @@ export interface LocalUser {
  * Verify credentials and return a signed JWT.
  */
 export async function loginLocal(
-  email: string,
+  identifier: string,
   password: string
 ): Promise<{ token: string; user: LocalUser }> {
-  const user = await queryOne<{ id: string; email: string; full_name: string | null; password_hash: string; role: string }>(
-    'SELECT id, email, full_name, password_hash, role FROM public.local_users WHERE email = $1',
-    [email.toLowerCase().trim()]
+  const user = await queryOne<{ id: string; email: string; username: string | null; full_name: string | null; password_hash: string; role: string }>(
+    'SELECT id, email, username, full_name, password_hash, role FROM public.local_users WHERE email = $1 OR username = $1',
+    [identifier.toLowerCase().trim()]
   );
 
-  if (!user) throw new Error('Invalid email or password');
+  if (!user) throw new Error('Invalid email, username, or password');
 
   const valid = await verifyPassword(password, user.password_hash);
-  if (!valid) throw new Error('Invalid email or password');
+  if (!valid) throw new Error('Invalid email, username, or password');
 
   const token = signJwt({ sub: user.id, email: user.email, role: user.role });
-  return { token, user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role } };
+  return { token, user: { id: user.id, email: user.email, username: user.username, full_name: user.full_name, role: user.role } };
 }
 
 /**
@@ -116,9 +117,10 @@ export async function signUpLocal(
   email: string,
   password: string,
   fullName: string,
-  role: 'admin' | 'member' = 'member'
+  role: 'admin' | 'member' = 'member',
+  username?: string
 ): Promise<{ token: string; user: LocalUser }> {
-  const user = await createLocalUser(email, password, fullName, role);
+  const user = await createLocalUser(email, password, fullName, role, username);
   const token = signJwt({ sub: user.id, email: user.email, role: user.role });
   return { token, user };
 }
@@ -131,15 +133,17 @@ export async function createLocalUser(
   email: string,
   password: string,
   fullName: string,
-  role: 'admin' | 'member' = 'member'
+  role: 'admin' | 'member' = 'member',
+  username?: string
 ): Promise<LocalUser> {
   const existingEmail = email.toLowerCase().trim();
+  const existingUser = username ? username.toLowerCase().trim() : null;
 
   const existing = await queryOne(
-    'SELECT id FROM public.local_users WHERE email = $1',
-    [existingEmail]
+    'SELECT id FROM public.local_users WHERE email = $1 OR (username IS NOT NULL AND username = $2)',
+    [existingEmail, existingUser]
   );
-  if (existing) throw new Error('A user with that email already exists');
+  if (existing) throw new Error('A user with that email or username already exists');
 
   const passwordHash = await hashPassword(password);
 
@@ -151,7 +155,7 @@ export async function createLocalUser(
       `INSERT INTO auth.users (email, encrypted_password, raw_user_meta_data)
        VALUES ($1, $2, $3)
        RETURNING id`,
-      [existingEmail, passwordHash, JSON.stringify({ full_name: fullName })]
+      [existingEmail, passwordHash, JSON.stringify({ full_name: fullName, username: existingUser })]
     );
     if (!authUser) throw new Error('Failed to create auth user');
 
@@ -159,17 +163,17 @@ export async function createLocalUser(
 
     // 2. Insert into local_users (for password login)
     await query(
-      `INSERT INTO public.local_users (id, email, full_name, password_hash, role)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [userId, existingEmail, fullName, passwordHash, role]
+      `INSERT INTO public.local_users (id, email, full_name, password_hash, role, username)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [userId, existingEmail, fullName, passwordHash, role, existingUser]
     );
 
     // 3. Insert into profiles
     await query(
-      `INSERT INTO public.profiles (id, email, full_name)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, full_name = EXCLUDED.full_name`,
-      [userId, existingEmail, fullName]
+      `INSERT INTO public.profiles (id, email, full_name, username)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, full_name = EXCLUDED.full_name, username = EXCLUDED.username`,
+      [userId, existingEmail, fullName, existingUser]
     );
 
     // 4. Insert into user_roles
@@ -182,7 +186,7 @@ export async function createLocalUser(
 
     await query('COMMIT');
 
-    return { id: userId, email: existingEmail, full_name: fullName, role };
+    return { id: userId, email: existingEmail, username: existingUser, full_name: fullName, role };
   } catch (err) {
     await query('ROLLBACK');
     throw err;
