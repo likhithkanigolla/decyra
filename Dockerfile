@@ -14,11 +14,9 @@ COPY . .
 ENV NODE_ENV=production
 ENV VITE_DATABASE_TYPE=postgres
 
-# Build application (generates .output for node-server preset)
-RUN npm run build
-
-# Compile the create-admin script (without bundling external node_modules)
-RUN npm install -g esbuild && esbuild scripts/create-admin.ts --bundle --platform=node --format=esm --packages=external --outfile=.output/create-admin.mjs
+# Build application (generates .output for node-server preset) and compile the create-admin script
+RUN npm run build && \
+    ./node_modules/.bin/esbuild scripts/create-admin.ts --bundle --platform=node --format=esm --packages=external --outfile=.output/create-admin.mjs
 
 # Production stage
 FROM node:22-alpine AS runner
