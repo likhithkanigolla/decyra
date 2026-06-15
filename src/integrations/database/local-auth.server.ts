@@ -96,12 +96,19 @@ export async function loginLocal(
   identifier: string,
   password: string
 ): Promise<{ token: string; user: LocalUser }> {
-  const user = await queryOne<{ id: string; email: string; username: string | null; full_name: string | null; password_hash: string; role: string }>(
-    'SELECT id, email, username, full_name, password_hash, role FROM public.local_users WHERE email = $1 OR username = $1',
+  const user = await queryOne<{ id: string; email: string; username: string | null; full_name: string | null; password_hash: string; role: string; is_locked: boolean }>(
+    `SELECT u.id, u.email, u.username, u.full_name, u.password_hash, u.role, p.is_locked 
+     FROM public.local_users u 
+     LEFT JOIN public.profiles p ON u.id = p.id 
+     WHERE u.email = $1 OR u.username = $1`,
     [identifier.toLowerCase().trim()]
   );
 
   if (!user) throw new Error('Invalid email, username, or password');
+  
+  if (user.is_locked) {
+    throw new Error('Your account has been locked. Please contact your administrator.');
+  }
 
   const valid = await verifyPassword(password, user.password_hash);
   if (!valid) throw new Error('Invalid email, username, or password');
