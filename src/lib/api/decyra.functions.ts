@@ -23,7 +23,7 @@ async function pgOne<T = any>(sql: string, params?: any[]) {
 
 // ─── getMyContext ─────────────────────────────────────────────────────────────
 
-export const getMyContext = createServerFn({ method: "GET" })
+export const getMyContext = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
@@ -65,7 +65,7 @@ export const getMyContext = createServerFn({ method: "GET" })
 
 // ─── listProjects ─────────────────────────────────────────────────────────────
 
-export const listProjects = createServerFn({ method: "GET" })
+export const listProjects = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
@@ -277,7 +277,7 @@ export const updateProject = createServerFn({ method: "POST" })
 
 // ─── getProject ───────────────────────────────────────────────────────────────
 
-export const getProject = createServerFn({ method: "GET" })
+export const getProject = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
@@ -372,7 +372,7 @@ export const getProject = createServerFn({ method: "GET" })
 
 // ─── listProfiles ─────────────────────────────────────────────────────────────
 
-export const listProfiles = createServerFn({ method: "GET" })
+export const listProfiles = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
@@ -502,7 +502,7 @@ export const lookupEmailByUsernameFn = createServerFn({ method: "POST" })
 
 // ─── signUpLocal (NEW — local auth endpoint) ───────────────────────────────────
 
-export const checkIsFirstRunFn = createServerFn({ method: "GET" })
+export const checkIsFirstRunFn = createServerFn({ method: "POST" })
   .handler(async () => {
     const dbConfig = getDatabaseConfig();
     if (dbConfig.isLocal) {
@@ -637,8 +637,12 @@ export const deleteUser = createServerFn({ method: "POST" })
         [userId]
       ));
       if (!isAdmin) throw new Error("Only platform admins can delete users.");
-      // Cascade deletes local_users, profiles, user_roles, project_members via FK
+      
+      // Explicitly delete local_users since it lacks an ON DELETE CASCADE FK to auth.users
+      await pgQuery("DELETE FROM local_users WHERE id = $1", [data.target_user_id]);
+      // Deleting from auth.users cascades to profiles, user_roles, project_members, etc.
       await pgQuery("DELETE FROM auth.users WHERE id = $1", [data.target_user_id]);
+      
       return { ok: true };
     }
 
@@ -811,7 +815,7 @@ export const createAdr = createServerFn({ method: "POST" })
 
 // ─── getAdr ───────────────────────────────────────────────────────────────────
 
-export const getAdr = createServerFn({ method: "GET" })
+export const getAdr = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
@@ -1144,7 +1148,7 @@ export const addComment = createServerFn({ method: "POST" })
 
 // ─── dashboardStats ───────────────────────────────────────────────────────────
 
-export const dashboardStats = createServerFn({ method: "GET" })
+export const dashboardStats = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
@@ -1465,7 +1469,7 @@ export const updateAdr = createServerFn({ method: "POST" })
 
 // ─── searchAdrs ───────────────────────────────────────────────────────────────
 
-export const searchAdrs = createServerFn({ method: "GET" })
+export const searchAdrs = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) =>
     z.object({
@@ -1529,7 +1533,7 @@ export const searchAdrs = createServerFn({ method: "GET" })
 
 // ─── getAdrRelationships ──────────────────────────────────────────────────────
 
-export const getAdrRelationships = createServerFn({ method: "GET" })
+export const getAdrRelationships = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ adr_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
@@ -1769,7 +1773,7 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
 
 // ─── getProjectForGraph ───────────────────────────────────────────────────────
 
-export const getProjectForGraph = createServerFn({ method: "GET" })
+export const getProjectForGraph = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
