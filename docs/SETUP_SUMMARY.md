@@ -103,10 +103,10 @@ Create or update `.env` with:
 ### Local PostgreSQL
 ```
 DATABASE_TYPE=postgres
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/architecture_hub
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/decyra
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-POSTGRES_DB=architecture_hub
+POSTGRES_DB=decyra
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 ```
@@ -151,9 +151,9 @@ npm run dev
 ## Database Access
 
 ### Local PostgreSQL
-- **Connection**: `postgresql://postgres:postgres@localhost:5432/architecture_hub`
+- **Connection**: `postgresql://postgres:postgres@localhost:5432/decyra`
 - **pgAdmin UI**: http://localhost:5050 (admin@admin.com / admin)
-- **Docker CLI**: `docker-compose exec postgres psql -U postgres -d architecture_hub`
+- **Docker CLI**: `docker-compose exec postgres psql -U postgres -d decyra`
 
 ### Supabase
 - Set `DATABASE_TYPE=supabase` in `.env`

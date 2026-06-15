@@ -56,12 +56,12 @@ docker-compose exec postgres pg_isready -U postgres
 
 ### 3. "Database Does Not Exist" Error
 
-**Problem**: `ERROR: database "architecture_hub" does not exist`
+**Problem**: `ERROR: database "decyra" does not exist`
 
 **Solutions**:
 ```bash
 # Create database manually
-docker-compose exec postgres psql -U postgres -c "CREATE DATABASE architecture_hub;"
+docker-compose exec postgres psql -U postgres -c "CREATE DATABASE decyra;"
 
 # Or reset everything
 npm run db:reset
@@ -76,7 +76,7 @@ npm run db:reset
 **Solutions**:
 
 1. In pgAdmin, add new server with:
-   - **Name**: architecture_hub
+   - **Name**: decyra
    - **Host name/address**: `postgres` (not localhost!)
    - **Port**: `5432`
    - **Username**: `postgres`
@@ -100,10 +100,10 @@ npm run db:reset
 
 ```bash
 # View migration status
-docker-compose exec postgres psql -U postgres -d architecture_hub -c "SELECT * FROM migrations;"
+docker-compose exec postgres psql -U postgres -d decyra -c "SELECT * FROM migrations;"
 
 # Manually apply migrations
-docker-compose exec postgres psql -U postgres -d architecture_hub -f /docker-entrypoint-initdb.d/migration_file.sql
+docker-compose exec postgres psql -U postgres -d decyra -f /docker-entrypoint-initdb.d/migration_file.sql
 
 # Or rebuild containers (this auto-applies migrations)
 npm run db:reset
@@ -274,10 +274,10 @@ This is expected behavior. To avoid data loss:
 1. **Use backups**:
    ```bash
    # Backup PostgreSQL
-   docker-compose exec postgres pg_dump -U postgres architecture_hub > backup.sql
+   docker-compose exec postgres pg_dump -U postgres decyra > backup.sql
    
    # Restore from backup
-   docker-compose exec postgres psql -U postgres architecture_hub < backup.sql
+   docker-compose exec postgres psql -U postgres decyra < backup.sql
    ```
 
 2. **Don't use `db:reset` in production**
@@ -314,7 +314,7 @@ docker ps
    ```bash
    brew install postgresql
    brew services start postgresql
-   createdb architecture_hub
+   createdb decyra
    ```
 
 2. **Or use Rosetta**:
@@ -340,7 +340,7 @@ docker ps
 
 2. **Enter database directly**:
    ```bash
-   docker-compose exec postgres psql -U postgres -d architecture_hub
+   docker-compose exec postgres psql -U postgres -d decyra
    ```
 
 3. **Check PostgreSQL status**:

@@ -158,14 +158,14 @@ npm run dev
 - Add connection:
   - Host: `postgres` (use service name, not localhost)
   - Port: 5432
-  - Database: architecture_hub
+  - Database: decyra
   - Username: postgres
   - Password: postgres
 
 ### PostgreSQL CLI
 ```bash
 # Access database directly
-docker-compose exec postgres psql -U postgres -d architecture_hub
+docker-compose exec postgres psql -U postgres -d decyra
 
 # Common SQL commands
 \dt              # List tables

@@ -601,26 +601,10 @@ export const generateDemoAdrFn = createServerFn({ method: "POST" })
     const context = ctx(rawCtx);
     const { supabase, userId, isDatabaseLocal } = context;
 
-    // Get the next sequence number
-    let nextSeq = 1;
-    if (isDatabaseLocal) {
-      const { queryOne } = await import("@/integrations/database/postgres");
-      const res = await queryOne<{ count: string }>(
-        "SELECT COUNT(*) FROM public.adrs WHERE project_id = $1",
-        [data.project_id]
-      );
-      nextSeq = parseInt(res?.count || "0", 10) + 1;
-    } else {
-      const { count } = await supabase
-        .from("adrs")
-        .select("*", { count: "exact", head: true })
-        .eq("project_id", data.project_id);
-      nextSeq = (count ?? 0) + 1;
-    }
-
     const demoAdr = {
       project_id: data.project_id,
-      sequence_num: nextSeq,
+      adr_number: 0,
+      full_id: "PENDING",
       title: "Adopt Event-Driven Architecture for User Notifications",
       status: "approved",
       author_id: userId,
@@ -653,17 +637,16 @@ export const generateDemoAdrFn = createServerFn({ method: "POST" })
     };
 
     if (isDatabaseLocal) {
-      const { queryOne } = await import("@/integrations/database/postgres");
       const inserted = await queryOne<{ id: string }>(
         `INSERT INTO public.adrs (
-           project_id, sequence_num, title, status, author_id, tags,
+           project_id, title, status, author_id, tags,
            context, decision, consequences, alternatives,
            design_changes, major_impacts, references_data
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         ) VALUES ($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb)
          RETURNING id`,
         [
-          demoAdr.project_id, demoAdr.sequence_num, demoAdr.title, demoAdr.status, demoAdr.author_id,
-          JSON.stringify(demoAdr.tags), demoAdr.context, demoAdr.decision, demoAdr.consequences, demoAdr.alternatives,
+          demoAdr.project_id, demoAdr.title, demoAdr.status, demoAdr.author_id,
+          demoAdr.tags, demoAdr.context, demoAdr.decision, demoAdr.consequences, demoAdr.alternatives,
           JSON.stringify(demoAdr.design_changes), JSON.stringify(demoAdr.major_impacts), JSON.stringify(demoAdr.references_data)
         ]
       );
