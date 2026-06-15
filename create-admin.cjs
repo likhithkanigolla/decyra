@@ -5776,7 +5776,7 @@ if (process.argv[1] === __filename) {
 }
 
 // scripts/create-admin.ts
-var email = process.env.ADMIN_EMAIL || "admin@localhost.com";
+var email = process.env.ADMIN_EMAIL || "decyra_admin";
 var password = process.env.ADMIN_PASSWORD || "admin1234";
 var fullName = process.env.ADMIN_NAME || "Platform Admin";
 async function main() {

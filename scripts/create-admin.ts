@@ -16,9 +16,9 @@ import { createLocalUser } from '../src/integrations/database/local-auth.server.
 import { closePool } from '../src/integrations/database/postgres.ts';
 import { runMigrations } from '../src/integrations/database/migrate.ts';
 
-const email    = process.env.ADMIN_EMAIL    || 'admin@localhost.com';
+const email = process.env.ADMIN_EMAIL || 'decyra_admin';
 const password = process.env.ADMIN_PASSWORD || 'admin1234';
-const fullName = process.env.ADMIN_NAME     || 'Platform Admin';
+const fullName = process.env.ADMIN_NAME || 'Platform Admin';
 
 async function main() {
   console.log('🔄 Ensuring database is migrated...');
