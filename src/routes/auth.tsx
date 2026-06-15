@@ -68,7 +68,7 @@ function AuthPage() {
     try {
       if (isForgotPass) {
         if (IS_LOCAL) {
-          toast.error("Password resets are disabled in local development mode. Please contact your database administrator or use the reset-password script.");
+          toast.error("Email-based password resets are disabled in self-hosted mode. Please contact your database administrator.");
           setLoading(false);
           return;
         }
@@ -134,16 +134,11 @@ function AuthPage() {
             {isForgotPass 
               ? "Enter your email or username to receive a reset link." 
               : (isSignUp && isFirstRun) ? "Create the initial administrator account." : "Welcome back to your governance workspace."}
-            {IS_LOCAL && (
-              <span className="ml-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 text-xs font-medium">
-                Local mode
-              </span>
-            )}
           </p>
 
           {isForgotPass && IS_LOCAL && (
             <div className="mt-4 p-3 rounded bg-amber-500/10 border border-amber-500/20 text-sm text-amber-600 dark:text-amber-400">
-              Password resets are disabled in local development mode. Please contact your database administrator or use the `npm run reset-password` script.
+              Email-based password resets are disabled in self-hosted Postgres mode. Please contact your database administrator to reset your password.
             </div>
           )}
 
