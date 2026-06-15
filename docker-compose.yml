@@ -15,11 +15,23 @@ services:
       # Fallback stub for Supabase environment checks
       - SUPABASE_URL=http://placeholder.supabase.co
       - SUPABASE_PUBLISHABLE_KEY=placeholder_key
+      # Node.js performance: increase libuv thread pool for concurrent I/O
+      - UV_THREADPOOL_SIZE=16
+      # Connection pool size (tune down if the server has limited RAM)
+      - POSTGRES_POOL_MAX=10
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - app_network
+    # Prevent OOM-kill from slowing/crashing the app container
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine
@@ -28,6 +40,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-decyra}
+    # Tune Postgres for a small Docker deployment
+    command: >
+      postgres
+        -c shared_buffers=128MB
+        -c work_mem=4MB
+        -c maintenance_work_mem=64MB
+        -c max_connections=50
+        -c effective_cache_size=256MB
+        -c synchronous_commit=off
     ports:
       - "17053:5432"
     volumes:
@@ -39,6 +60,13 @@ services:
       retries: 5
     networks:
       - app_network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    restart: unless-stopped
 
 volumes:
   postgres_data:
