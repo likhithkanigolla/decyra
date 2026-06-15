@@ -147,6 +147,7 @@ export const createProject = createServerFn({ method: "POST" })
         ]
       );
       if (!project) throw new Error("Failed to create project");
+      delete project.git_pat;
 
       await pgQuery(
         `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'project_admin')`,
@@ -177,6 +178,7 @@ export const createProject = createServerFn({ method: "POST" })
       .select()
       .single();
     if (error) throw new Error(error.message);
+    if (project) delete project.git_pat;
     await supabase.from("project_members").insert({
       project_id: project.id,
       user_id: userId,
@@ -238,6 +240,7 @@ export const updateProject = createServerFn({ method: "POST" })
         ]
       );
       if (!updated) throw new Error("Project not found");
+      delete updated.git_pat;
       return updated;
     }
 
@@ -272,6 +275,7 @@ export const updateProject = createServerFn({ method: "POST" })
       .select()
       .single();
     if (error) throw new Error(error.message);
+    if (project) delete project.git_pat;
     return project;
   });
 
@@ -290,6 +294,7 @@ export const getProject = createServerFn({ method: "POST" })
         [data.id]
       );
       if (!project) throw new Error("Project not found");
+      delete project.git_pat;
 
       const [membersRow, adrsRow, myMembershipRow, rolesRow] = await Promise.all([
         pgQuery(
@@ -341,6 +346,7 @@ export const getProject = createServerFn({ method: "POST" })
       .maybeSingle();
     if (error) throw new Error(error.message);
     if (!project) throw new Error("Project not found");
+    delete project.git_pat;
     const { data: members } = await supabase
       .from("project_members")
       .select("id, role, user_id, profiles(full_name, email, avatar_url)")
