@@ -115,7 +115,7 @@ export const createProject = createServerFn({ method: "POST" })
         description: z.string().optional(),
         repo_url: z.string().optional(),
         branch: z.string().optional(),
-        adr_path: z.string().optional(),
+        adr_path: z.string().optional(),   // empty string = repo root
         git_pat: z.string().nullable().optional(),
       })
       .parse(d)
@@ -141,7 +141,7 @@ export const createProject = createServerFn({ method: "POST" })
           data.description ?? null,
           data.repo_url || null,
           data.branch || "main",
-          data.adr_path || "docs/adr",
+          data.adr_path ?? "",   // empty string allowed (= repo root)
           data.git_pat || null,
           userId,
         ]
@@ -170,7 +170,7 @@ export const createProject = createServerFn({ method: "POST" })
         description: data.description ?? null,
         repo_url: data.repo_url || null,
         branch: data.branch || "main",
-        adr_path: data.adr_path || "docs/adr",
+        adr_path: data.adr_path ?? "",  // empty string = repo root
         git_pat: data.git_pat || null,
         created_by: userId,
       })
@@ -592,6 +592,66 @@ export const removeProjectMember = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// ─── deleteProject ───────────────────────────────────────────────────────────
+
+export const deleteProject = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      const isAdmin = !!(await pgOne(
+        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+        [userId]
+      ));
+      if (!isAdmin) throw new Error("Only platform admins can delete projects.");
+      await pgQuery("DELETE FROM projects WHERE id = $1", [data.id]);
+      return { ok: true };
+    }
+
+    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
+    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
+      throw new Error("Only platform admins can delete projects.");
+    }
+    const { error } = await supabase.from("projects").delete().eq("id", data.id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// ─── deleteUser ───────────────────────────────────────────────────────────────
+
+export const deleteUser = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ target_user_id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (data.target_user_id === userId) throw new Error("You cannot delete your own account.");
+
+    if (isDatabaseLocal) {
+      const isAdmin = !!(await pgOne(
+        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+        [userId]
+      ));
+      if (!isAdmin) throw new Error("Only platform admins can delete users.");
+      // Cascade deletes local_users, profiles, user_roles, project_members via FK
+      await pgQuery("DELETE FROM auth.users WHERE id = $1", [data.target_user_id]);
+      return { ok: true };
+    }
+
+    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
+    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
+      throw new Error("Only platform admins can delete users.");
+    }
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(data.target_user_id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
 // ─── generateDemoAdrFn (NEW — Onboarding) ───────────────────────────────────
 
 export const generateDemoAdrFn = createServerFn({ method: "POST" })
@@ -637,7 +697,7 @@ export const generateDemoAdrFn = createServerFn({ method: "POST" })
     };
 
     if (isDatabaseLocal) {
-      const inserted = await queryOne<{ id: string }>(
+      const inserted = await pgOne<{ id: string }>(
         `INSERT INTO public.adrs (
            project_id, title, status, author_id, tags,
            context, decision, consequences, alternatives,
@@ -858,7 +918,89 @@ export const getAdr = createServerFn({ method: "GET" })
     };
   });
 
+// ─── deleteAdr ────────────────────────────────────────────────────────────────
+
+export const deleteAdr = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (isDatabaseLocal) {
+      // Only allow deletion of draft ADRs
+      const adr = await pgOne<{ status: string; project_id: string }>(
+        "SELECT status, project_id FROM adrs WHERE id = $1",
+        [data.id]
+      );
+      if (!adr) throw new Error("ADR not found.");
+      if (adr.status !== "draft") throw new Error("Only draft ADRs can be deleted.");
+
+      // Prevent deletion if any published versions exist — only a never-published draft can be removed
+      const pvCount = await pgOne<{ count: string }>(
+        "SELECT COUNT(*) FROM published_versions WHERE adr_id = $1",
+        [data.id]
+      );
+      if (parseInt(pvCount?.count ?? "0", 10) > 0) {
+        throw new Error(
+          "This ADR has published versions and cannot be deleted. You can supersede it instead."
+        );
+      }
+
+      const isAdmin = !!(await pgOne(
+        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+        [userId]
+      ));
+      const isProjectAdmin = !!(await pgOne(
+        "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
+        [userId, adr.project_id]
+      ));
+      if (!isAdmin && !isProjectAdmin) throw new Error("Only admins or project admins can delete ADRs.");
+
+      await pgQuery("DELETE FROM adrs WHERE id = $1", [data.id]);
+      return { ok: true, project_id: adr.project_id };
+    }
+
+    // Supabase mode
+    const { data: adr, error: fetchErr } = await supabase
+      .from("adrs")
+      .select("status, project_id")
+      .eq("id", data.id)
+      .maybeSingle();
+    if (fetchErr) throw new Error(fetchErr.message);
+    if (!adr) throw new Error("ADR not found.");
+    if (adr.status !== "draft") throw new Error("Only draft ADRs can be deleted.");
+
+    // Prevent deletion if any published versions exist
+    const { count: pvCount } = await supabase
+      .from("published_versions")
+      .select("*", { count: "exact", head: true })
+      .eq("adr_id", data.id);
+    if ((pvCount ?? 0) > 0) {
+      throw new Error(
+        "This ADR has published versions and cannot be deleted. You can supersede it instead."
+      );
+    }
+
+    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
+    const { data: membership } = await supabase
+      .from("project_members")
+      .select("role")
+      .eq("project_id", adr.project_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    const isAdmin = (roles ?? []).some((r: any) => r.role === "admin");
+    const isProjectAdmin = membership?.role === "project_admin";
+    if (!isAdmin && !isProjectAdmin) throw new Error("Only admins or project admins can delete ADRs.");
+
+    const { error } = await supabase.from("adrs").delete().eq("id", data.id);
+    if (error) throw new Error(error.message);
+    return { ok: true, project_id: adr.project_id };
+  });
+
+
 // ─── updateAdrStatus ──────────────────────────────────────────────────────────
+
 
 export const updateAdrStatus = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])

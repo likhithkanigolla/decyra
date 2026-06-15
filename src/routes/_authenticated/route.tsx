@@ -1,5 +1,5 @@
 import { createFileRoute, Outlet, redirect, Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { getMyContext } from "@/lib/api/decyra.functions";
 import {
@@ -53,7 +53,13 @@ function Shell() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const fetchMe = useServerFn(getMyContext);
-  const { data: me } = useQuery({ queryKey: ["me"], queryFn: () => fetchMe() });
+  const queryClient = useQueryClient();
+  const { data: me } = useQuery({
+    queryKey: ["me"],
+    queryFn: () => fetchMe(),
+    staleTime: 0,        // always re-fetch on mount — avoids stale user shown after re-login
+    gcTime: 0,           // don't cache between sessions
+  });
   const [theme, setTheme] = useState<Theme>(getTheme);
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -79,6 +85,8 @@ function Shell() {
   }
 
   async function signOut() {
+    // Clear ALL cached queries so the next user sees a clean slate immediately
+    queryClient.clear();
     if (IS_LOCAL) {
       localStorage.removeItem("local_auth_token");
     } else {

@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { listProfiles, createUser, updateUser, adminResetPassword, listProjects, addProjectMember } from "@/lib/api/decyra.functions";
+import { listProfiles, createUser, updateUser, adminResetPassword, listProjects, addProjectMember, deleteUser } from "@/lib/api/decyra.functions";
 import { useState } from "react";
 import { toast } from "sonner";
-import { UserPlus, X, Shield, User, Pencil, Key, FolderPlus } from "lucide-react";
+import { UserPlus, X, Shield, User, Pencil, Key, FolderPlus, Trash2 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/admin")({
   head: () => ({ meta: [{ title: "Admin — Decyra" }] }),
@@ -44,10 +44,14 @@ function Admin() {
   const [resetPasswordValue, setResetPasswordValue] = useState("");
   const [resetBusy, setResetBusy] = useState(false);
 
+  const deleteUserFn = useServerFn(deleteUser);
   const assignProjectFn = useServerFn(addProjectMember);
   const [assignTarget, setAssignTarget] = useState<null | { id: string; email: string; full_name: string }>(null);
   const [assignForm, setAssignForm] = useState({ project_id: "", role: "engineer" as const });
   const [assignBusy, setAssignBusy] = useState(false);
+
+  const [deleteTarget, setDeleteTarget] = useState<null | { id: string; email: string; full_name: string }>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -114,6 +118,21 @@ function Admin() {
     }
   }
 
+  async function handleDeleteUser() {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    try {
+      await deleteUserFn({ data: { target_user_id: deleteTarget.id } });
+      toast.success(`User ${deleteTarget.email} deleted`);
+      setDeleteTarget(null);
+      qc.invalidateQueries({ queryKey: ["profiles"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to delete user");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <div className="flex items-start justify-between gap-4">
@@ -158,6 +177,10 @@ function Admin() {
                 <button onClick={() => openEdit(p)}
                   className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" title="Edit user">
                   <Pencil className="h-3.5 w-3.5" />
+                </button>
+                <button onClick={() => setDeleteTarget(p)}
+                  className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Delete user">
+                  <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>
             </div>
@@ -258,6 +281,27 @@ function Admin() {
             </Field>
             <ModalActions onCancel={() => setAssignTarget(null)} busy={assignBusy} label="Assign project" />
           </form>
+        </Modal>
+      )}
+
+      {/* ── Delete User Confirmation ── */}
+      {deleteTarget && (
+        <Modal title="Delete user" onClose={() => setDeleteTarget(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Are you sure you want to permanently delete{" "}
+              <span className="font-semibold text-foreground">{deleteTarget.full_name || deleteTarget.email}</span>?
+              This will remove their account, project memberships, and all associated data. This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setDeleteTarget(null)}
+                className="h-10 rounded-md border border-border bg-card px-4 text-sm hover:bg-accent">Cancel</button>
+              <button disabled={deleteBusy} onClick={handleDeleteUser}
+                className="h-10 rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
+                {deleteBusy ? "Deleting…" : "Delete user"}
+              </button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>

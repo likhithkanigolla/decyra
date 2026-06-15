@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { getProject, listProfiles, addProjectMember, removeProjectMember, generateDemoAdrFn } from "@/lib/api/decyra.functions";
+import { getProject, listProfiles, addProjectMember, removeProjectMember, generateDemoAdrFn, deleteProject } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { Plus, Users, GitBranch, FolderOpen, Trash2, Pencil, FileText } from "lucide-react";
 import { useState } from "react";
@@ -18,8 +18,12 @@ function ProjectDetail() {
   const { data, refetch } = useQuery({ queryKey: ["project", projectId], queryFn: () => fn({ data: { id: projectId } }) });
   const navigate = useNavigate();
   const generateDemoFn = useServerFn(generateDemoAdrFn);
+  const deleteProjectFn = useServerFn(deleteProject);
+  const qc = useQueryClient();
   const [filter, setFilter] = useState("");
   const [generatingDemo, setGeneratingDemo] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
+  const [showDeleteProject, setShowDeleteProject] = useState(false);
 
   if (!data) return <div className="p-8 text-sm text-muted-foreground">Loading…</div>;
   const { project, members, adrs, myRole, isAdmin } = data;
@@ -36,6 +40,19 @@ function ProjectDetail() {
       toast.error(err.message ?? "Failed to generate demo ADR");
     } finally {
       setGeneratingDemo(false);
+    }
+  }
+
+  async function handleDeleteProject() {
+    setDeletingProject(true);
+    try {
+      await deleteProjectFn({ data: { id: projectId } });
+      toast.success("Project deleted");
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      navigate({ to: "/projects" });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to delete project");
+      setDeletingProject(false);
     }
   }
 
@@ -61,6 +78,12 @@ function ProjectDetail() {
               <Pencil className="h-4 w-4" /> Edit
             </button>
           )}
+          {isAdmin && (
+            <button onClick={() => setShowDeleteProject(true)}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-destructive/40 bg-card px-3 text-sm font-medium text-destructive hover:bg-destructive/10">
+              <Trash2 className="h-4 w-4" /> Delete
+            </button>
+          )}
           <button onClick={() => navigate({ to: "/projects/$projectId/adrs/new", params: { projectId } })}
             className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">
             <Plus className="h-4 w-4" /> New ADR
@@ -75,7 +98,7 @@ function ProjectDetail() {
           <div className="text-xs text-muted-foreground mt-1">Branch: <span className="font-mono">{project.branch}</span></div>
         </InfoCard>
         <InfoCard icon={FolderOpen} label="ADR path">
-          <span className="font-mono text-xs">{project.adr_path}</span>
+          <span className="font-mono text-xs">{project.adr_path || <span className="text-muted-foreground">(root)</span>}</span>
         </InfoCard>
         <InfoCard icon={Users} label="Members">
           <span className="text-2xl font-semibold">{members.length}</span>
@@ -141,6 +164,27 @@ function ProjectDetail() {
         </div>
         <MembersPanel projectId={projectId} members={members} canManage={canManage} onChange={refetch} />
       </section>
+
+      {/* Delete Project Confirmation */}
+      {showDeleteProject && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 px-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl">
+            <h2 className="text-lg font-semibold">Delete project</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Are you sure you want to permanently delete <span className="font-semibold text-foreground">{project.name}</span>?
+              All ADRs, members and data will be lost. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setShowDeleteProject(false)}
+                className="h-10 rounded-md border border-border bg-card px-4 text-sm hover:bg-accent">Cancel</button>
+              <button disabled={deletingProject} onClick={handleDeleteProject}
+                className="h-10 rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
+                {deletingProject ? "Deleting…" : "Delete project"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -197,6 +241,12 @@ function MembersPanel({ projectId, members, canManage, onChange }: { projectId: 
             </div>
             <div className="flex items-center gap-2">
               <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide">{m.role.replace("_", " ")}</span>
+              {canManage && (
+                <button onClick={() => remove(m.id)}
+                  className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Remove from project">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
           </div>
         ))}

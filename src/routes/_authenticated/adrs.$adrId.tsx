@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   getAdr, updateAdrStatus, approveAdr, addComment,
   getAdrRelationships, addAdrRelationship, removeAdrRelationship, publishAdr,
-  searchAdrs
+  searchAdrs, deleteAdr
 } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { SimpleMarkdown } from "@/components/decyra/RichEditor";
@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Edit, Send, ThumbsUp, MessageSquare, GitCommit,
   GitBranch, Link as LinkIcon, X, Plus, Book, ChevronDown, ChevronRight,
-  Eye, Rocket, ExternalLink
+  Eye, Rocket, ExternalLink, Trash2
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/adrs/$adrId")({
@@ -52,6 +52,10 @@ function AdrDetail() {
   const removeRelFn = useServerFn(removeAdrRelationship);
   const publishFn = useServerFn(publishAdr);
   const searchFn = useServerFn(searchAdrs);
+  const deleteAdrFn = useServerFn(deleteAdr);
+
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingAdr, setDeletingAdr] = useState(false);
 
   const { data } = useQuery({ queryKey: ["adr", adrId], queryFn: () => getAdrFn({ data: { id: adrId } }) });
   const { data: rels, refetch: refetchRels } = useQuery({
@@ -148,6 +152,20 @@ function AdrDetail() {
       toast.success("Relationship removed");
       refetchRels();
     } catch (err: any) { toast.error(err.message); }
+  }
+
+  async function handleDeleteAdr() {
+    setDeletingAdr(true);
+    try {
+      const result = await deleteAdrFn({ data: { id: adrId } });
+      toast.success("Draft ADR deleted");
+      qc.invalidateQueries({ queryKey: ["project", result?.project_id] });
+      navigate({ to: "/projects/$projectId", params: { projectId: result!.project_id } });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to delete ADR");
+      setDeletingAdr(false);
+      setShowDeleteConfirm(false);
+    }
   }
 
   if (!data) return <div className="p-8 text-sm text-muted-foreground animate-pulse">Loading…</div>;
@@ -428,6 +446,18 @@ function AdrDetail() {
             )}
           </div>
 
+          {/* Delete draft ADR */}
+          {adr.status === "draft" && canPublish && (
+            <div className="mt-3 pt-3 border-t border-border">
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                className="w-full h-9 rounded-md border border-destructive/40 bg-card px-3 text-sm font-medium text-destructive hover:bg-destructive/10 flex items-center justify-center gap-2"
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Delete draft
+              </button>
+            </div>
+          )}
+
           {/* Approval progress */}
           {adr.status === "under_review" && (
             <div className="mt-3 pt-3 border-t border-border">
@@ -541,6 +571,28 @@ function AdrDetail() {
           <ChevronRight className="h-3.5 w-3.5 ml-auto" />
         </Link>
       </aside>
+
+      {/* ── Delete ADR Confirmation ── */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 px-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl">
+            <h2 className="text-lg font-semibold">Delete draft ADR</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Are you sure you want to permanently delete{" "}
+              <span className="font-semibold text-foreground font-mono">{adr.full_id}</span>?{" "}
+              This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setShowDeleteConfirm(false)}
+                className="h-10 rounded-md border border-border bg-card px-4 text-sm hover:bg-accent">Cancel</button>
+              <button disabled={deletingAdr} onClick={handleDeleteAdr}
+                className="h-10 rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
+                {deletingAdr ? "Deleting…" : "Delete ADR"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
