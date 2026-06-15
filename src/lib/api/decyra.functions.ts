@@ -379,15 +379,15 @@ export const listProfiles = createServerFn({ method: "POST" })
     const { supabase, isDatabaseLocal } = context;
 
     if (isDatabaseLocal) {
-      const result = await pgQuery<{ id: string; email: string; full_name: string }>(
-        "SELECT id, email, full_name FROM profiles ORDER BY full_name"
+      const result = await pgQuery<{ id: string; email: string; full_name: string; is_locked: boolean }>(
+        "SELECT id, email, full_name, is_locked FROM profiles ORDER BY full_name"
       );
       return result.rows;
     }
 
     const { data } = await supabase
       .from("profiles")
-      .select("id, email, full_name");
+      .select("id, email, full_name, is_locked");
     return data ?? [];
   });
 
@@ -652,6 +652,46 @@ export const deleteUser = createServerFn({ method: "POST" })
     }
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin.auth.admin.deleteUser(data.target_user_id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// ─── toggleUserLock ───────────────────────────────────────────────────────────
+
+export const toggleUserLock = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ target_user_id: z.string().uuid(), lock: z.boolean() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    if (data.target_user_id === userId) throw new Error("You cannot lock your own account.");
+
+    if (isDatabaseLocal) {
+      const isAdmin = !!(await pgOne(
+        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+        [userId]
+      ));
+      if (!isAdmin) throw new Error("Only platform admins can lock users.");
+      
+      await pgQuery("UPDATE profiles SET is_locked = $1 WHERE id = $2", [data.lock, data.target_user_id]);
+      return { ok: true };
+    }
+
+    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
+    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
+      throw new Error("Only platform admins can lock users.");
+    }
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    // In Supabase, we also want to ban the user via Admin Auth API
+    if (data.lock) {
+      // ban for 100 years
+      await supabaseAdmin.auth.admin.updateUserById(data.target_user_id, { ban_duration: "876000h" });
+    } else {
+      await supabaseAdmin.auth.admin.updateUserById(data.target_user_id, { ban_duration: "none" });
+    }
+    // And sync the lock status to profiles for UI
+    const { error } = await supabaseAdmin.from("profiles").update({ is_locked: data.lock }).eq("id", data.target_user_id);
     if (error) throw new Error(error.message);
     return { ok: true };
   });

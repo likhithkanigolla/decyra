@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { listProfiles, createUser, updateUser, adminResetPassword, listProjects, addProjectMember, deleteUser } from "@/lib/api/decyra.functions";
+import { listProfiles, createUser, updateUser, adminResetPassword, listProjects, addProjectMember, deleteUser, toggleUserLock } from "@/lib/api/decyra.functions";
 import { useState } from "react";
 import { toast } from "sonner";
-import { UserPlus, X, Shield, User, Pencil, Key, FolderPlus, Trash2 } from "lucide-react";
+import { UserPlus, X, Shield, User, Pencil, Key, FolderPlus, Trash2, Lock, Unlock } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/admin")({
   head: () => ({ meta: [{ title: "Admin — Decyra" }] }),
@@ -52,6 +52,9 @@ function Admin() {
 
   const [deleteTarget, setDeleteTarget] = useState<null | { id: string; email: string; full_name: string }>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const toggleLockFn = useServerFn(toggleUserLock);
+  const [lockBusy, setLockBusy] = useState<string | null>(null);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -133,6 +136,19 @@ function Admin() {
     }
   }
 
+  async function handleToggleLock(user: any) {
+    setLockBusy(user.id);
+    try {
+      await toggleLockFn({ data: { target_user_id: user.id, lock: !user.is_locked } });
+      toast.success(`User ${user.email} ${user.is_locked ? 'unlocked' : 'locked'}`);
+      qc.invalidateQueries({ queryKey: ["profiles"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to update lock status");
+    } finally {
+      setLockBusy(null);
+    }
+  }
+
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <div className="flex items-start justify-between gap-4">
@@ -160,7 +176,10 @@ function Admin() {
                   {(p.full_name ?? p.email ?? "?").slice(0, 1).toUpperCase()}
                 </div>
                 <div>
-                  <div className="text-sm font-medium">{p.full_name ?? "—"}</div>
+                  <div className="text-sm font-medium flex items-center gap-2">
+                    {p.full_name ?? "—"}
+                    {p.is_locked && <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-destructive tracking-widest">Locked</span>}
+                  </div>
                   <div className="text-xs text-muted-foreground">{p.email}</div>
                 </div>
               </div>
@@ -177,6 +196,10 @@ function Admin() {
                 <button onClick={() => openEdit(p)}
                   className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" title="Edit user">
                   <Pencil className="h-3.5 w-3.5" />
+                </button>
+                <button onClick={() => handleToggleLock(p)} disabled={lockBusy === p.id}
+                  className="rounded-md p-1.5 text-muted-foreground hover:bg-amber-500/10 hover:text-amber-500 disabled:opacity-50" title={p.is_locked ? "Unlock user" : "Lock user"}>
+                  {p.is_locked ? <Unlock className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
                 </button>
                 <button onClick={() => setDeleteTarget(p)}
                   className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Delete user">
