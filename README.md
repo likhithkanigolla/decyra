@@ -47,7 +47,7 @@ Architecture Hub (internally referred to as Decyra) is a modern, collaborative p
    DATABASE_TYPE=postgres
    VITE_DATABASE_TYPE=postgres
    LOCAL_DEV_MODE=true
-   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/architecture_hub
+   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/decyra
    ```
 
 3. **Database Setup:**

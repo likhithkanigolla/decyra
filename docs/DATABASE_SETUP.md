@@ -18,7 +18,7 @@ This project supports both **Supabase** (cloud) and **local PostgreSQL** for dev
    - Apply database migrations
 
 2. **Access your database:**
-   - Connection string: `postgresql://postgres:postgres@localhost:5432/architecture_hub`
+   - Connection string: `postgresql://postgres:postgres@localhost:5432/decyra`
    - pgAdmin UI: http://localhost:5050 (admin@admin.com / admin)
 
 3. **Stop when done:**
@@ -45,10 +45,10 @@ This project supports both **Supabase** (cloud) and **local PostgreSQL** for dev
 ### Local PostgreSQL
 ```env
 DATABASE_TYPE=postgres
-DATABASE_URL=postgresql://postgres:password@localhost:5432/architecture_hub
+DATABASE_URL=postgresql://postgres:password@localhost:5432/decyra
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-POSTGRES_DB=architecture_hub
+POSTGRES_DB=decyra
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 ```
@@ -79,19 +79,19 @@ npm run db:reset
 docker-compose logs -f postgres
 
 # Connect to database via CLI
-docker-compose exec postgres psql -U postgres -d architecture_hub
+docker-compose exec postgres psql -U postgres -d decyra
 ```
 
 ## Database Access
 
 ### Via Docker Exec
 ```bash
-docker-compose exec postgres psql -U postgres -d architecture_hub
+docker-compose exec postgres psql -U postgres -d decyra
 ```
 
 ### Via Local CLI (if PostgreSQL installed)
 ```bash
-psql postgresql://postgres:postgres@localhost:5432/architecture_hub
+psql postgresql://postgres:postgres@localhost:5432/decyra
 ```
 
 ### Via pgAdmin UI
@@ -105,7 +105,7 @@ psql postgresql://postgres:postgres@localhost:5432/architecture_hub
 1. SQL files in `supabase/migrations/` are auto-applied on Docker startup
 2. To apply new migrations manually:
    ```bash
-   docker-compose exec postgres psql -U postgres -d architecture_hub -f /docker-entrypoint-initdb.d/migration-file.sql
+   docker-compose exec postgres psql -U postgres -d decyra -f /docker-entrypoint-initdb.d/migration-file.sql
    ```
 
 ### For Supabase
@@ -163,7 +163,7 @@ sudo lsof -ti:5432 | xargs kill -9
 ### Migrations Not Applied
 ```bash
 # Manually apply migrations
-docker-compose exec postgres bash -c 'for f in /docker-entrypoint-initdb.d/*.sql; do psql -U postgres -d architecture_hub -f "$f"; done'
+docker-compose exec postgres bash -c 'for f in /docker-entrypoint-initdb.d/*.sql; do psql -U postgres -d decyra -f "$f"; done'
 ```
 
 ## Security Notes

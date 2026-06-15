@@ -9,10 +9,10 @@ Set `DATABASE_TYPE` environment variable to choose:
 ### Local PostgreSQL (Development)
 ```
 DATABASE_TYPE=postgres
-DATABASE_URL=postgresql://postgres:password@localhost:5432/architecture_hub
+DATABASE_URL=postgresql://postgres:password@localhost:5432/decyra
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-POSTGRES_DB=architecture_hub
+POSTGRES_DB=decyra
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 ```

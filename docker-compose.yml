@@ -3,7 +3,7 @@ version: '3.8'
 services:
   app:
     build: .
-    container_name: architecture_hub_app
+    container_name: decyra_app
     ports:
       - "17052:3000"
     environment:
@@ -11,7 +11,7 @@ services:
       - VITE_DATABASE_TYPE=postgres
       - LOCAL_DEV_MODE=false
       # Use the docker internal network hostname `postgres`
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-architecture_hub}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-decyra}
       # Fallback stub for Supabase environment checks
       - SUPABASE_URL=http://placeholder.supabase.co
       - SUPABASE_PUBLISHABLE_KEY=placeholder_key
@@ -23,11 +23,11 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: architecture_hub_db
+    container_name: decyra_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-architecture_hub}
+      POSTGRES_DB: ${POSTGRES_DB:-decyra}
     ports:
       - "17053:5432"
     volumes:

@@ -29,9 +29,9 @@ npm run dev
 ## Database Access
 
 ### PostgreSQL (local)
-- **Connection**: `postgresql://postgres:postgres@localhost:5432/architecture_hub`
+- **Connection**: `postgresql://postgres:postgres@localhost:5432/decyra`
 - **pgAdmin**: http://localhost:5050
-- **CLI**: `docker-compose exec postgres psql -U postgres -d architecture_hub`
+- **CLI**: `docker-compose exec postgres psql -U postgres -d decyra`
 
 ### Supabase (cloud)
 - **Console**: https://app.supabase.com
@@ -43,7 +43,7 @@ npm run dev
 ### For Local PostgreSQL
 ```env
 DATABASE_TYPE=postgres
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/architecture_hub
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/decyra
 ```
 
 ### For Supabase

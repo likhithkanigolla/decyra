@@ -11,7 +11,7 @@ export const Route = createFileRoute("/_authenticated/admin")({
   component: Admin,
 });
 
-const DEFAULT_CREATE = { email: "", password: "", full_name: "", role: "member" as "admin" | "member" };
+const DEFAULT_CREATE = { email: "", password: "", full_name: "", username: "", role: "member" as "admin" | "member" };
 const DEFAULT_EDIT = { user_id: "", full_name: "", role: "member" as "admin" | "member" };
 
 function Admin() {
@@ -53,7 +53,8 @@ function Admin() {
     e.preventDefault();
     setCreateBusy(true);
     try {
-      await createUserFn({ data: createForm });
+      const payload = { ...createForm, username: createForm.username || undefined };
+      await createUserFn({ data: payload });
       toast.success(`User ${createForm.email} created`);
       setCreateForm(DEFAULT_CREATE);
       setShowCreate(false);
@@ -172,6 +173,12 @@ function Admin() {
               <input required value={createForm.full_name}
                 onChange={(e) => setCreateForm({ ...createForm, full_name: e.target.value })}
                 placeholder="Jane Smith"
+                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
+            </Field>
+            <Field label="Username (optional)">
+              <input type="text" minLength={3} maxLength={30} value={createForm.username}
+                onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })}
+                placeholder="janesmith"
                 className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
             </Field>
             <Field label="Email">
