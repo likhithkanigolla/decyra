@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { RichEditor } from "./RichEditor";
-import { Plus, X, Link as LinkIcon, Upload } from "lucide-react";
+import { Download, Plus, X, Link as LinkIcon, Upload } from "lucide-react";
 
 export interface AdrFormData {
   title: string;
@@ -79,10 +79,72 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "references", label: "References" },
 ];
 
+const SAMPLE_ADR = `# [PROJECT_CODE]-ADR-[NUMBER]: [Title]
+
+**Status:** draft
+**Date:** YYYY-MM-DD
+**Tags:** [comma, separated, tags]
+
+## Context
+
+[Describe the context and problem statement here.]
+
+## Decision
+
+[Describe the architecture decision that was made.]
+
+## Consequences
+
+[Describe the positive and negative consequences of this decision.]
+
+## Alternatives Considered
+
+[Describe alternatives that were evaluated and why they were rejected.]
+
+## Design Changes
+
+### API Changes
+[Details about API changes, if applicable.]
+
+### Workflow Changes
+[Details about workflow changes, if applicable.]
+
+### Service Changes
+[Details about services changed, if applicable.]
+
+### Infrastructure Changes
+[Details about infrastructure changes, if applicable.]
+
+### Data Model Changes
+[Details about data model changes, if applicable.]
+
+## Major Impacts
+
+### Operational Impact
+[Operational impact, if applicable.]
+
+### Testing Impact
+[Testing impact, if applicable.]
+
+### Security Impact
+[Security impact, if applicable.]
+
+### Documentation Impact
+[Documentation impact, if applicable.]
+
+### Scalability Impact
+[Scalability impact, if applicable.]
+
+## References
+
+Add relevant pull requests, commits, design documents, wiki pages, or external links.
+`;
+
 export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel = "Create draft" }: Props) {
   const [tab, setTab] = useState<TabId>("core");
   const [importText, setImportText] = useState("");
   const [showImport, setShowImport] = useState(false);
+  const [validationError, setValidationError] = useState("");
 
   function setDC(key: keyof AdrFormData["design_changes"], val: string) {
     setForm({ ...form, design_changes: { ...form.design_changes, [key]: val } });
@@ -137,8 +199,38 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
     reader.readAsText(file);
   }
 
+  function downloadSample() {
+    const url = URL.createObjectURL(new Blob([SAMPLE_ADR], { type: "text/markdown" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "SampleADR.md";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    const missingFields = [
+      ["Title", form.title],
+      ["Context", form.context],
+      ["Decision", form.decision],
+      ["Consequences", form.consequences],
+    ]
+      .filter(([, value]) => !value.trim())
+      .map(([label]) => label);
+
+    if (missingFields.length > 0) {
+      e.preventDefault();
+      setTab("core");
+      setValidationError(`Complete the required fields: ${missingFields.join(", ")}.`);
+      return;
+    }
+
+    setValidationError("");
+    onSubmit(e);
+  }
+
   return (
-    <form onSubmit={onSubmit} className="space-y-0">
+    <form onSubmit={handleSubmit} className="space-y-0">
       {/* Markdown Import Banner */}
       {showImport ? (
         <div className="mb-4 rounded-lg border border-border bg-card p-4">
@@ -166,12 +258,25 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
           </div>
         </div>
       ) : (
-        <div className="mb-4 flex justify-end">
+        <div className="mb-4 flex justify-end gap-4">
+          <button
+            type="button"
+            onClick={downloadSample}
+            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <Download className="h-3.5 w-3.5" /> Download sample Markdown
+          </button>
           <button type="button" onClick={() => setShowImport(true)}
             className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
             <Upload className="h-3.5 w-3.5" /> Import from Markdown
           </button>
         </div>
+      )}
+
+      {validationError && (
+        <p role="alert" className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {validationError}
+        </p>
       )}
 
       {/* Basic Info */}
@@ -222,11 +327,11 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
           {tab === "core" && (
             <>
               <RichEditor label="Context" value={form.context} onChange={(v) => setForm({ ...form, context: v })}
-                placeholder="Describe the situation and forces at play. What is the issue that motivates this decision?" rows={8} />
+                placeholder="Describe the situation and forces at play. What is the issue that motivates this decision?" rows={8} required />
               <RichEditor label="Decision" value={form.decision} onChange={(v) => setForm({ ...form, decision: v })}
-                placeholder="State the decision that was made in clear, active voice." rows={6} />
+                placeholder="State the decision that was made in clear, active voice." rows={6} required />
               <RichEditor label="Consequences" value={form.consequences} onChange={(v) => setForm({ ...form, consequences: v })}
-                placeholder="Positive, negative, and follow-up implications of this decision." rows={6} />
+                placeholder="Positive, negative, and follow-up implications of this decision." rows={6} required />
               <RichEditor label="Alternatives considered" value={form.alternatives} onChange={(v) => setForm({ ...form, alternatives: v })}
                 placeholder="Other options evaluated and why they were not chosen." rows={5} />
             </>
