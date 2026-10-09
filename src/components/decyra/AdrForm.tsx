@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { RichEditor } from "./RichEditor";
+import { parseAdrMarkdown } from "@/lib/adr-markdown";
 import { Download, Plus, X, Link as LinkIcon, Upload } from "lucide-react";
 
 export interface AdrFormData {
@@ -140,7 +141,14 @@ const SAMPLE_ADR = `# [PROJECT_CODE]-ADR-[NUMBER]: [Title]
 Add relevant pull requests, commits, design documents, wiki pages, or external links.
 `;
 
-export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel = "Create draft" }: Props) {
+export function AdrForm({
+  form,
+  setForm,
+  busy,
+  onSubmit,
+  onCancel,
+  submitLabel = "Create draft",
+}: Props) {
   const [tab, setTab] = useState<TabId>("core");
   const [importText, setImportText] = useState("");
   const [showImport, setShowImport] = useState(false);
@@ -174,18 +182,18 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
 
   // Import markdown
   function parseMarkdown(md: string) {
-    const extract = (heading: string) => {
-      const re = new RegExp(`##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##|$)`, "i");
-      return md.match(re)?.[1]?.trim() ?? "";
-    };
-    const titleMatch = md.match(/^#\s+(.+)/m);
+    const parsed = parseAdrMarkdown(md);
     setForm({
       ...form,
-      title: titleMatch?.[1] ?? form.title,
-      context: extract("Context") || extract("Problem Statement"),
-      decision: extract("Decision"),
-      consequences: extract("Consequences"),
-      alternatives: extract("Alternatives"),
+      title: parsed.title || form.title,
+      tags: parsed.tags.join(", "),
+      context: parsed.context || form.context,
+      decision: parsed.decision || form.decision,
+      consequences: parsed.consequences || form.consequences,
+      alternatives: parsed.alternatives || form.alternatives,
+      design_changes: { ...form.design_changes, ...parsed.design_changes },
+      major_impacts: { ...form.major_impacts, ...parsed.major_impacts },
+      references_data: { ...form.references_data, ...parsed.references_data },
     });
     setShowImport(false);
     setImportText("");
@@ -236,7 +244,9 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
         <div className="mb-4 rounded-lg border border-border bg-card p-4">
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium">Import from Markdown</span>
-            <button type="button" onClick={() => setShowImport(false)}><X className="h-4 w-4 text-muted-foreground" /></button>
+            <button type="button" onClick={() => setShowImport(false)}>
+              <X className="h-4 w-4 text-muted-foreground" />
+            </button>
           </div>
           <textarea
             value={importText}
@@ -246,8 +256,11 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
           />
           <div className="mt-2 flex gap-2 items-center">
-            <button type="button" onClick={() => parseMarkdown(importText)}
-              className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground">
+            <button
+              type="button"
+              onClick={() => parseMarkdown(importText)}
+              className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground"
+            >
               Parse & import
             </button>
             <span className="text-xs text-muted-foreground">or</span>
@@ -266,22 +279,30 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
           >
             <Download className="h-3.5 w-3.5" /> Download sample Markdown
           </button>
-          <button type="button" onClick={() => setShowImport(true)}
-            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+          <button
+            type="button"
+            onClick={() => setShowImport(true)}
+            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+          >
             <Upload className="h-3.5 w-3.5" /> Import from Markdown
           </button>
         </div>
       )}
 
       {validationError && (
-        <p role="alert" className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <p
+          role="alert"
+          className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
           {validationError}
         </p>
       )}
 
       {/* Basic Info */}
       <div className="rounded-lg border border-border bg-card p-5 space-y-4">
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Basic information</h3>
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          Basic information
+        </h3>
         <div>
           <label className="text-xs font-medium text-muted-foreground mb-1 block">
             Title <span className="text-destructive">*</span>
@@ -326,63 +347,156 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
         <div className="p-5 space-y-5">
           {tab === "core" && (
             <>
-              <RichEditor label="Context" value={form.context} onChange={(v) => setForm({ ...form, context: v })}
-                placeholder="Describe the situation and forces at play. What is the issue that motivates this decision?" rows={8} required />
-              <RichEditor label="Decision" value={form.decision} onChange={(v) => setForm({ ...form, decision: v })}
-                placeholder="State the decision that was made in clear, active voice." rows={6} required />
-              <RichEditor label="Consequences" value={form.consequences} onChange={(v) => setForm({ ...form, consequences: v })}
-                placeholder="Positive, negative, and follow-up implications of this decision." rows={6} required />
-              <RichEditor label="Alternatives considered" value={form.alternatives} onChange={(v) => setForm({ ...form, alternatives: v })}
-                placeholder="Other options evaluated and why they were not chosen." rows={5} />
+              <RichEditor
+                label="Context"
+                value={form.context}
+                onChange={(v) => setForm({ ...form, context: v })}
+                placeholder="Describe the situation and forces at play. What is the issue that motivates this decision?"
+                rows={8}
+                required
+              />
+              <RichEditor
+                label="Decision"
+                value={form.decision}
+                onChange={(v) => setForm({ ...form, decision: v })}
+                placeholder="State the decision that was made in clear, active voice."
+                rows={6}
+                required
+              />
+              <RichEditor
+                label="Consequences"
+                value={form.consequences}
+                onChange={(v) => setForm({ ...form, consequences: v })}
+                placeholder="Positive, negative, and follow-up implications of this decision."
+                rows={6}
+                required
+              />
+              <RichEditor
+                label="Alternatives considered"
+                value={form.alternatives}
+                onChange={(v) => setForm({ ...form, alternatives: v })}
+                placeholder="Other options evaluated and why they were not chosen."
+                rows={5}
+              />
             </>
           )}
 
           {tab === "design" && (
             <>
-              <p className="text-xs text-muted-foreground -mt-1">Document specific technical changes resulting from this decision. Leave empty if not applicable.</p>
-              {([
-                ["api_changes", "API Changes", "Endpoint additions, removals, signature changes, versioning…"],
-                ["workflow_changes", "Workflow Changes", "Process changes, sequence changes, orchestration updates…"],
-                ["service_changes", "Service Changes", "New services, removed services, dependency changes…"],
-                ["infrastructure_changes", "Infrastructure Changes", "Cloud resources, networking, deployment topology…"],
-                ["data_model_changes", "Data Model Changes", "Schema additions, migrations, data structure changes…"],
-              ] as const).map(([key, label, ph]) => (
-                <RichEditor key={key} label={label} value={form.design_changes[key]} onChange={(v) => setDC(key, v)}
-                  placeholder={ph} rows={4} />
+              <p className="text-xs text-muted-foreground -mt-1">
+                Document specific technical changes resulting from this decision. Leave empty if not
+                applicable.
+              </p>
+              {(
+                [
+                  [
+                    "api_changes",
+                    "API Changes",
+                    "Endpoint additions, removals, signature changes, versioning…",
+                  ],
+                  [
+                    "workflow_changes",
+                    "Workflow Changes",
+                    "Process changes, sequence changes, orchestration updates…",
+                  ],
+                  [
+                    "service_changes",
+                    "Service Changes",
+                    "New services, removed services, dependency changes…",
+                  ],
+                  [
+                    "infrastructure_changes",
+                    "Infrastructure Changes",
+                    "Cloud resources, networking, deployment topology…",
+                  ],
+                  [
+                    "data_model_changes",
+                    "Data Model Changes",
+                    "Schema additions, migrations, data structure changes…",
+                  ],
+                ] as const
+              ).map(([key, label, ph]) => (
+                <RichEditor
+                  key={key}
+                  label={label}
+                  value={form.design_changes[key]}
+                  onChange={(v) => setDC(key, v)}
+                  placeholder={ph}
+                  rows={4}
+                />
               ))}
             </>
           )}
 
           {tab === "impacts" && (
             <>
-              <p className="text-xs text-muted-foreground -mt-1">Assess the impact of this decision across key dimensions. Leave empty if not applicable.</p>
-              {([
-                ["operational", "Operational Impact", "Monitoring, alerting, on-call, runbooks, SLA impact…"],
-                ["testing", "Testing Impact", "Test coverage changes, new test strategies, CI/CD…"],
-                ["security", "Security Impact", "Threat model changes, authentication, authorization, data privacy…"],
-                ["documentation", "Documentation Impact", "Docs to update, new docs needed, API docs, runbooks…"],
-                ["scalability", "Scalability Impact", "Performance characteristics, scaling strategies, limits…"],
-              ] as const).map(([key, label, ph]) => (
-                <RichEditor key={key} label={label} value={form.major_impacts[key]} onChange={(v) => setMI(key, v)}
-                  placeholder={ph} rows={4} />
+              <p className="text-xs text-muted-foreground -mt-1">
+                Assess the impact of this decision across key dimensions. Leave empty if not
+                applicable.
+              </p>
+              {(
+                [
+                  [
+                    "operational",
+                    "Operational Impact",
+                    "Monitoring, alerting, on-call, runbooks, SLA impact…",
+                  ],
+                  [
+                    "testing",
+                    "Testing Impact",
+                    "Test coverage changes, new test strategies, CI/CD…",
+                  ],
+                  [
+                    "security",
+                    "Security Impact",
+                    "Threat model changes, authentication, authorization, data privacy…",
+                  ],
+                  [
+                    "documentation",
+                    "Documentation Impact",
+                    "Docs to update, new docs needed, API docs, runbooks…",
+                  ],
+                  [
+                    "scalability",
+                    "Scalability Impact",
+                    "Performance characteristics, scaling strategies, limits…",
+                  ],
+                ] as const
+              ).map(([key, label, ph]) => (
+                <RichEditor
+                  key={key}
+                  label={label}
+                  value={form.major_impacts[key]}
+                  onChange={(v) => setMI(key, v)}
+                  placeholder={ph}
+                  rows={4}
+                />
               ))}
             </>
           )}
 
           {tab === "references" && (
             <>
-              <p className="text-xs text-muted-foreground -mt-1">Link supporting resources for this decision.</p>
-              {([
-                ["pull_requests", "Pull Requests", "https://github.com/org/repo/pull/123"],
-                ["git_commits", "Git Commits", "abc1234"],
-                ["design_docs", "Design Documents", "https://…"],
-                ["wiki_pages", "Wiki Pages", "https://wiki.company.com/…"],
-                ["external", "External References", "https://…"],
-              ] as const).map(([key, label, ph]) => (
-                <RefList key={key} label={label} placeholder={ph}
+              <p className="text-xs text-muted-foreground -mt-1">
+                Link supporting resources for this decision.
+              </p>
+              {(
+                [
+                  ["pull_requests", "Pull Requests", "https://github.com/org/repo/pull/123"],
+                  ["git_commits", "Git Commits", "abc1234"],
+                  ["design_docs", "Design Documents", "https://…"],
+                  ["wiki_pages", "Wiki Pages", "https://wiki.company.com/…"],
+                  ["external", "External References", "https://…"],
+                ] as const
+              ).map(([key, label, ph]) => (
+                <RefList
+                  key={key}
+                  label={label}
+                  placeholder={ph}
                   items={form.references_data[key]}
                   onAdd={(v) => addRef(key, v)}
-                  onRemove={(idx) => removeRef(key, idx)} />
+                  onRemove={(idx) => removeRef(key, idx)}
+                />
               ))}
             </>
           )}
@@ -391,12 +505,18 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
 
       {/* Submit */}
       <div className="mt-4 flex justify-end gap-2">
-        <button type="button" onClick={onCancel}
-          className="h-10 rounded-md border border-border bg-card px-4 text-sm hover:bg-accent">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-10 rounded-md border border-border bg-card px-4 text-sm hover:bg-accent"
+        >
           Cancel
         </button>
-        <button disabled={busy} type="submit"
-          className="h-10 rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
+        <button
+          disabled={busy}
+          type="submit"
+          className="h-10 rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
           {busy ? "Saving…" : submitLabel}
         </button>
       </div>
@@ -404,9 +524,18 @@ export function AdrForm({ form, setForm, busy, onSubmit, onCancel, submitLabel =
   );
 }
 
-function RefList({ label, placeholder, items, onAdd, onRemove }: {
-  label: string; placeholder: string;
-  items: string[]; onAdd: (v: string) => void; onRemove: (i: number) => void;
+function RefList({
+  label,
+  placeholder,
+  items,
+  onAdd,
+  onRemove,
+}: {
+  label: string;
+  placeholder: string;
+  items: string[];
+  onAdd: (v: string) => void;
+  onRemove: (i: number) => void;
 }) {
   const [val, setVal] = useState("");
   return (
@@ -415,10 +544,17 @@ function RefList({ label, placeholder, items, onAdd, onRemove }: {
       {items.length > 0 && (
         <div className="mb-2 space-y-1">
           {items.map((item, idx) => (
-            <div key={idx} className="flex items-center gap-2 rounded-md bg-accent/50 px-2.5 py-1.5 text-xs">
+            <div
+              key={idx}
+              className="flex items-center gap-2 rounded-md bg-accent/50 px-2.5 py-1.5 text-xs"
+            >
               <LinkIcon className="h-3 w-3 text-muted-foreground shrink-0" />
               <span className="flex-1 truncate font-mono">{item}</span>
-              <button type="button" onClick={() => onRemove(idx)} className="text-muted-foreground hover:text-destructive">
+              <button
+                type="button"
+                onClick={() => onRemove(idx)}
+                className="text-muted-foreground hover:text-destructive"
+              >
                 <X className="h-3 w-3" />
               </button>
             </div>
@@ -429,12 +565,24 @@ function RefList({ label, placeholder, items, onAdd, onRemove }: {
         <input
           value={val}
           onChange={(e) => setVal(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onAdd(val); setVal(""); } }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onAdd(val);
+              setVal("");
+            }
+          }}
           placeholder={placeholder}
           className="flex-1 h-8 rounded-md border border-input bg-background px-3 text-xs font-mono"
         />
-        <button type="button" onClick={() => { onAdd(val); setVal(""); }}
-          className="h-8 w-8 rounded-md border border-border bg-card hover:bg-accent flex items-center justify-center">
+        <button
+          type="button"
+          onClick={() => {
+            onAdd(val);
+            setVal("");
+          }}
+          className="h-8 w-8 rounded-md border border-border bg-card hover:bg-accent flex items-center justify-center"
+        >
           <Plus className="h-3.5 w-3.5" />
         </button>
       </div>

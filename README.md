@@ -8,10 +8,14 @@ Architecture Hub (internally referred to as Decyra) is a modern, collaborative p
 - **Project Workspaces**: Group ADRs by project. Restrict visibility and editing rights to assigned project members.
 - **Workflow & Approvals**: Transition ADRs through robust states (`Draft` -> `Under Review` -> `Approved` -> `Published`). Request mandatory reviews and track who approved or requested changes.
 - **Versioning**: Editing published ADRs automatically bumps them back into a draft state, while safely archiving the previously published Markdown in the version history.
+- **Repository Import & Migration**: Import existing ADR Markdown from a source Git repository into a project, then review and publish it to the project's configured destination repository.
+- **Project Data Archives**: Export visible ADR content and relationships as versioned JSON, or import an archive into another project. Imported records are drafts; approvals, comments, and published-version history are not included.
 - **Relationship Graph**: Visually track dependencies across ADRs (e.g., `depends_on`, `supersedes`, `conflicts_with`) using an interactive, auto-layout React Flow graph. Supports cross-project dependencies.
 - **Duplicate Detection**: Smart keyword extraction actively warns you if a similar ADR already exists across your organization while you are typing, preventing duplicated engineering efforts.
 - **Dual Database Modes**: Run the application completely locally via PostgreSQL/Docker (`DATABASE_TYPE=postgres`) or connect it to a managed Supabase backend.
 - **Onboarding Experience**: First-time setup creates the initial administrator, and empty projects allow you to instantly generate Demo ADRs to learn the system.
+
+Project archives are intended for moving ADR content between projects and application instances, not as full database backups. Use PostgreSQL/Supabase backup and restore procedures when a complete recovery of users, approvals, comments, and version history is required.
 
 ## 🛠 Tech Stack
 
