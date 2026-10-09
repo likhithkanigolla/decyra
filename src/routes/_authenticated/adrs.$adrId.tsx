@@ -8,8 +8,10 @@ import {
 } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { SimpleMarkdown } from "@/components/decyra/RichEditor";
+import { DEFAULT_ADR_FORM, type AdrFormData } from "@/components/decyra/AdrForm";
+import { useAdrCollaboration, type AdrCollaborationState } from "@/hooks/useAdrCollaboration";
 import { getErrorMessage } from "@/lib/utils";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { toast } from "sonner";
 import {
   ArrowLeft, Edit, Send, ThumbsUp, MessageSquare, GitCommit,
@@ -190,6 +192,16 @@ function AdrDetail() {
     <div className="flex min-h-screen">
       {/* Main content */}
       <div className="flex-1 min-w-0 p-8 max-w-4xl">
+        {rels && (
+          <AdrCollaborationListener
+            adrId={adrId}
+            adr={adr}
+            relationships={rels}
+            invalidate={(queryKey) => {
+              void qc.invalidateQueries({ queryKey });
+            }}
+          />
+        )}
         {/* Back + edit */}
         <div className="flex items-center justify-between mb-5">
           <button
@@ -605,6 +617,52 @@ function AdrDetail() {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+function AdrCollaborationListener({
+  adrId,
+  adr,
+  relationships,
+  invalidate,
+}: {
+  adrId: string;
+  adr: Record<string, any>;
+  relationships: unknown[];
+  invalidate: (queryKey: string[]) => void;
+}) {
+  const statusRef = useRef(adr.status);
+  const relationshipsRevisionRef = useRef<string | undefined>();
+  const form: AdrFormData = {
+    ...DEFAULT_ADR_FORM,
+    title: adr.title ?? "",
+    tags: (adr.tags ?? []).join(", "),
+    context: adr.context ?? "",
+    decision: adr.decision ?? "",
+    consequences: adr.consequences ?? "",
+    alternatives: adr.alternatives ?? "",
+    design_changes: { ...DEFAULT_ADR_FORM.design_changes, ...(adr.design_changes ?? {}) },
+    major_impacts: { ...DEFAULT_ADR_FORM.major_impacts, ...(adr.major_impacts ?? {}) },
+    references_data: { ...DEFAULT_ADR_FORM.references_data, ...(adr.references_data ?? {}) },
+  };
+  const initialState: AdrCollaborationState = { form, status: adr.status, relationships };
+
+  useAdrCollaboration(adrId, initialState, {
+    syncLocalForm: false,
+    onRemoteChange: (state) => {
+      if (state.status !== statusRef.current) {
+        statusRef.current = state.status;
+        invalidate(["adr", adrId]);
+      }
+      if (
+        state.relationshipsRevision &&
+        state.relationshipsRevision !== relationshipsRevisionRef.current
+      ) {
+        relationshipsRevisionRef.current = state.relationshipsRevision;
+        invalidate(["adr-rels", adrId]);
+      }
+    },
+  });
+  return null;
+}
 
 function Section({ title, body }: { title: string; body: string }) {
   return (

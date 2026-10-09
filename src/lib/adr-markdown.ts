@@ -58,3 +58,207 @@ export function generateAdrMarkdown(adr: any): string {
 
   return md;
 }
+
+function normalizeSectionKey(value: string) {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+function extractMarkdownSection(markdown: string, heading: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  let active: string | null = null;
+  const buffer: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^##\s+(.+?)\s*$/);
+    if (match) {
+      if (active && normalizeSectionKey(active) === normalizeSectionKey(heading)) {
+        return buffer.join("\n").trim();
+      }
+      active = match[1].trim();
+      buffer.length = 0;
+      continue;
+    }
+
+    if (active && normalizeSectionKey(active) === normalizeSectionKey(heading)) {
+      buffer.push(line);
+    }
+  }
+
+  if (active && normalizeSectionKey(active) === normalizeSectionKey(heading)) {
+    return buffer.join("\n").trim();
+  }
+
+  return "";
+}
+
+function extractSubsectionValues(body: string, mapping: Record<string, string>) {
+  const result: Record<string, string> = {};
+  const lines = body.replace(/\r\n/g, "\n").split("\n");
+  let active: string | null = null;
+  const buffer: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^###\s+(.+?)\s*$/);
+    if (match) {
+      if (active) {
+        const normalized = normalizeSectionKey(active);
+        result[mapping[normalized] ?? normalized] = buffer.join("\n").trim();
+      }
+      active = match[1].trim();
+      buffer.length = 0;
+      continue;
+    }
+
+    if (active) {
+      buffer.push(line);
+    }
+  }
+
+  if (active) {
+    const normalized = normalizeSectionKey(active);
+    result[mapping[normalized] ?? normalized] = buffer.join("\n").trim();
+  }
+
+  return result;
+}
+
+function extractReferenceListSection(markdown: string, heading: string) {
+  const section = extractMarkdownSection(markdown, heading);
+  const groups: Record<string, string[]> = {};
+  const lines = section.replace(/\r\n/g, "\n").split("\n");
+  let active: string | null = null;
+  const buffer: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^###\s+(.+?)\s*$/);
+    if (match) {
+      if (active) {
+        const items = buffer
+          .map((item) => item.trim())
+          .filter((item) => item.startsWith("- ") || item.startsWith("* "))
+          .map((item) => item.replace(/^[-*]\s*/, "").trim())
+          .filter(Boolean);
+        if (items.length) {
+          groups[normalizeSectionKey(active)] = items;
+        }
+      }
+      active = match[1].trim();
+      buffer.length = 0;
+      continue;
+    }
+
+    if (active) {
+      buffer.push(line);
+    }
+  }
+
+  if (active) {
+    const items = buffer
+      .map((item) => item.trim())
+      .filter((item) => item.startsWith("- ") || item.startsWith("* "))
+      .map((item) => item.replace(/^[-*]\s*/, "").trim())
+      .filter(Boolean);
+    if (items.length) {
+      groups[normalizeSectionKey(active)] = items;
+    }
+  }
+
+  return groups;
+}
+
+export function parseAdrMarkdown(markdown: string) {
+  const content = markdown.replace(/\r\n/g, "\n").trim();
+  if (!content) {
+    return {
+      title: "",
+      tags: [],
+      context: "",
+      decision: "",
+      consequences: "",
+      alternatives: "",
+      design_changes: {
+        api_changes: "",
+        workflow_changes: "",
+        service_changes: "",
+        infrastructure_changes: "",
+        data_model_changes: "",
+      },
+      major_impacts: {
+        operational: "",
+        testing: "",
+        security: "",
+        documentation: "",
+        scalability: "",
+      },
+      references_data: {
+        pull_requests: [],
+        git_commits: [],
+        design_docs: [],
+        wiki_pages: [],
+        external: [],
+      },
+    };
+  }
+
+  const titleMatch = content.match(/^#\s+(.+?)\s*$/m);
+  const tagsMatch = content.match(/\*\*Tags:\*\*\s*([^\n]+)/i);
+  const tags = (tagsMatch?.[1] ?? "")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+  const designValues = extractSubsectionValues(extractMarkdownSection(content, "Design Changes"), {
+    api_changes: "api_changes",
+    workflow_changes: "workflow_changes",
+    service_changes: "service_changes",
+    infrastructure_changes: "infrastructure_changes",
+    data_model_changes: "data_model_changes",
+  });
+
+  const impactValues = extractSubsectionValues(extractMarkdownSection(content, "Major Impacts"), {
+    operational_impact: "operational",
+    testing_impact: "testing",
+    security_impact: "security",
+    documentation_impact: "documentation",
+    scalability_impact: "scalability",
+  });
+
+  const referenceValues = extractReferenceListSection(content, "References");
+
+  return {
+    title:
+      titleMatch?.[1]
+        ?.replace(/^(?:\[[^\]]+\]\s*-\s*|\[[^\]]+\]\s*|[A-Z0-9-]+\s*-\s*)?ADR-\d+:\s*/i, "")
+        ?.trim() ?? "",
+    tags,
+    context: extractMarkdownSection(content, "Context"),
+    decision: extractMarkdownSection(content, "Decision"),
+    consequences: extractMarkdownSection(content, "Consequences"),
+    alternatives: extractMarkdownSection(content, "Alternatives Considered"),
+    design_changes: {
+      api_changes: designValues.api_changes ?? "",
+      workflow_changes: designValues.workflow_changes ?? "",
+      service_changes: designValues.service_changes ?? "",
+      infrastructure_changes: designValues.infrastructure_changes ?? "",
+      data_model_changes: designValues.data_model_changes ?? "",
+    },
+    major_impacts: {
+      operational: impactValues.operational ?? "",
+      testing: impactValues.testing ?? "",
+      security: impactValues.security ?? "",
+      documentation: impactValues.documentation ?? "",
+      scalability: impactValues.scalability ?? "",
+    },
+    references_data: {
+      pull_requests: referenceValues.pull_requests ?? [],
+      git_commits: referenceValues.git_commits ?? [],
+      design_docs: referenceValues.design_documents ?? referenceValues.design_docs ?? [],
+      wiki_pages: referenceValues.wiki_pages ?? [],
+      external: referenceValues.external_references ?? referenceValues.external ?? [],
+    },
+  };
+}

@@ -14,6 +14,67 @@ export type Database = {
   }
   public: {
     Tables: {
+      adr_collaboration_rooms: {
+        Row: {
+          adr_id: string
+          created_at: string
+          created_by: string
+          snapshot: string
+        }
+        Insert: {
+          adr_id: string
+          created_at?: string
+          created_by: string
+          snapshot: string
+        }
+        Update: {
+          adr_id?: string
+          created_at?: string
+          created_by?: string
+          snapshot?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "adr_collaboration_rooms_adr_id_fkey"
+            columns: ["adr_id"]
+            isOneToOne: true
+            referencedRelation: "adrs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      adr_collaboration_updates: {
+        Row: {
+          adr_id: string
+          created_at: string
+          created_by: string
+          id: number
+          update_data: string
+        }
+        Insert: {
+          adr_id: string
+          created_at?: string
+          created_by: string
+          id?: number
+          update_data: string
+        }
+        Update: {
+          adr_id?: string
+          created_at?: string
+          created_by?: string
+          id?: number
+          update_data?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "adr_collaboration_updates_adr_id_fkey"
+            columns: ["adr_id"]
+            isOneToOne: false
+            referencedRelation: "adrs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       adr_relationships: {
         Row: {
           created_at: string
