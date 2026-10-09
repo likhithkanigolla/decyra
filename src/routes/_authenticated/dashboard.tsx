@@ -149,8 +149,9 @@ function Dashboard() {
                     ))}
                   </Pie>
                   <Tooltip
-                    contentStyle={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12 }}
+                    contentStyle={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12, color: "var(--color-card-foreground)" }}
                     labelStyle={{ color: "var(--color-foreground)" }}
+                    itemStyle={{ color: "var(--color-card-foreground)" }}
                   />
                 </PieChart>
               </ResponsiveContainer>

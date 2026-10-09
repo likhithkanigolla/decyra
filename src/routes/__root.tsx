@@ -27,6 +27,7 @@ export function applyTheme(theme: Theme) {
   const html = document.documentElement;
   html.classList.toggle("dark", theme === "dark");
   html.classList.toggle("light", theme === "light");
+  html.dataset.colorMode = theme;
   localStorage.setItem("theme", theme);
 }
 

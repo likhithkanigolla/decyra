@@ -18,6 +18,7 @@ function getTheme(): Theme {
 function applyTheme(t: Theme) {
   document.documentElement.classList.toggle("dark", t === "dark");
   document.documentElement.classList.toggle("light", t === "light");
+  document.documentElement.dataset.colorMode = t;
   localStorage.setItem("theme", t);
 }
 
