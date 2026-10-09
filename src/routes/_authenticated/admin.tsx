@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { listProfiles, createUser, updateUser, adminResetPassword, listProjects, addProjectMember, deleteUser, toggleUserLock } from "@/lib/api/decyra.functions";
+import { getErrorMessage } from "@/lib/utils";
 import { useState } from "react";
 import { toast } from "sonner";
 import { UserPlus, X, Shield, User, Pencil, Key, FolderPlus, Trash2, Lock, Unlock } from "lucide-react";
@@ -67,7 +68,7 @@ function Admin() {
       setShowCreate(false);
       qc.invalidateQueries({ queryKey: ["profiles"] });
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to create user");
+      toast.error(getErrorMessage(err, "Failed to create user"));
     } finally { setCreateBusy(false); }
   }
 
@@ -80,7 +81,7 @@ function Admin() {
       setEditTarget(null);
       qc.invalidateQueries({ queryKey: ["profiles"] });
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to update user");
+      toast.error(getErrorMessage(err, "Failed to update user"));
     } finally { setEditBusy(false); }
   }
 
@@ -99,7 +100,7 @@ function Admin() {
       setResetTarget(null);
       setResetPasswordValue("");
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to reset password");
+      toast.error(getErrorMessage(err, "Failed to reset password"));
     } finally {
       setResetBusy(false);
     }
@@ -115,7 +116,7 @@ function Admin() {
       setAssignTarget(null);
       qc.invalidateQueries({ queryKey: ["profiles"] });
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to assign project");
+      toast.error(getErrorMessage(err, "Failed to assign project"));
     } finally {
       setAssignBusy(false);
     }
@@ -130,7 +131,7 @@ function Admin() {
       setDeleteTarget(null);
       qc.invalidateQueries({ queryKey: ["profiles"] });
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to delete user");
+      toast.error(getErrorMessage(err, "Failed to delete user"));
     } finally {
       setDeleteBusy(false);
     }
@@ -143,7 +144,7 @@ function Admin() {
       toast.success(`User ${user.email} ${user.is_locked ? 'unlocked' : 'locked'}`);
       qc.invalidateQueries({ queryKey: ["profiles"] });
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to update lock status");
+      toast.error(getErrorMessage(err, "Failed to update lock status"));
     } finally {
       setLockBusy(null);
     }

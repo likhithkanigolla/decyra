@@ -8,6 +8,7 @@ import {
 } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { SimpleMarkdown } from "@/components/decyra/RichEditor";
+import { getErrorMessage } from "@/lib/utils";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -92,7 +93,7 @@ function AdrDetail() {
         qc.invalidateQueries({ queryKey: ["adr", adrId] });
         qc.invalidateQueries({ queryKey: ["dashboard"] });
       } catch (err: any) {
-        toast.error(err.message);
+        toast.error(getErrorMessage(err, "Failed to publish ADR"));
       } finally { setBusy(""); }
       return;
     }
@@ -101,7 +102,7 @@ function AdrDetail() {
       await updateStatusFn({ data: { id: adrId, status: nextStatus } });
       toast.success(`Moved to ${nextStatus.replace("_", " ")}`);
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
-    } catch (err: any) { toast.error(err.message); }
+    } catch (err: any) { toast.error(getErrorMessage(err, "Failed to update ADR status")); }
     finally { setBusy(""); }
   }
 
@@ -112,7 +113,7 @@ function AdrDetail() {
       toast.success(decision === "approve" ? "Approved!" : "Requested Changes");
       setApprovalNote("");
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
-    } catch (err: any) { toast.error(err.message); }
+    } catch (err: any) { toast.error(getErrorMessage(err, "Failed to submit review")); }
     finally { setBusy(""); }
   }
 
@@ -123,7 +124,7 @@ function AdrDetail() {
       await commentFn({ data: { adr_id: adrId, body: comment.trim() } });
       setComment("");
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
-    } catch (err: any) { toast.error(err.message); }
+    } catch (err: any) { toast.error(getErrorMessage(err, "Failed to add comment")); }
     finally { setBusy(""); }
   }
 
@@ -134,6 +135,8 @@ function AdrDetail() {
     try {
       const results = await searchFn({ data: { q } });
       setRelResults((results as any[]).filter((r: any) => r.id !== adrId));
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to search ADRs"));
     } finally { setRelSearching(false); }
   }
 
@@ -143,7 +146,7 @@ function AdrDetail() {
       toast.success("Relationship added");
       setRelSearch(""); setRelResults([]);
       refetchRels();
-    } catch (err: any) { toast.error(err.message); }
+    } catch (err: any) { toast.error(getErrorMessage(err, "Failed to add relationship")); }
   }
 
   async function removeRel(relId: string) {
@@ -151,7 +154,7 @@ function AdrDetail() {
       await removeRelFn({ data: { id: relId } });
       toast.success("Relationship removed");
       refetchRels();
-    } catch (err: any) { toast.error(err.message); }
+    } catch (err: any) { toast.error(getErrorMessage(err, "Failed to remove relationship")); }
   }
 
   async function handleDeleteAdr() {
@@ -162,7 +165,7 @@ function AdrDetail() {
       qc.invalidateQueries({ queryKey: ["project", result?.project_id] });
       navigate({ to: "/projects/$projectId", params: { projectId: result!.project_id } });
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to delete ADR");
+      toast.error(getErrorMessage(err, "Failed to delete ADR"));
       setDeletingAdr(false);
       setShowDeleteConfirm(false);
     }

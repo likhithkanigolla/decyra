@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { createAdr, findSimilarAdrs } from "@/lib/api/decyra.functions";
 import { AdrForm, DEFAULT_ADR_FORM, type AdrFormData } from "@/components/decyra/AdrForm";
+import { getErrorMessage } from "@/lib/utils";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { ArrowLeft, AlertTriangle } from "lucide-react";
@@ -64,7 +65,7 @@ function NewAdr() {
         navigate({ to: "/projects/$projectId", params: { projectId } });
       }
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to create ADR");
+      toast.error(getErrorMessage(err, "Failed to create ADR"));
     } finally {
       setBusy(false);
     }

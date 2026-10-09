@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { getProject, listProfiles, addProjectMember, removeProjectMember, generateDemoAdrFn, deleteProject } from "@/lib/api/decyra.functions";
+import { getErrorMessage } from "@/lib/utils";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { Plus, Users, GitBranch, FolderOpen, Trash2, Pencil, FileText } from "lucide-react";
 import { useState } from "react";
@@ -37,7 +38,7 @@ function ProjectDetail() {
       toast.success("Demo ADR generated");
       refetch();
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to generate demo ADR");
+      toast.error(getErrorMessage(err, "Failed to generate demo ADR"));
     } finally {
       setGeneratingDemo(false);
     }
@@ -51,7 +52,7 @@ function ProjectDetail() {
       qc.invalidateQueries({ queryKey: ["projects"] });
       navigate({ to: "/projects" });
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to delete project");
+      toast.error(getErrorMessage(err, "Failed to delete project"));
       setDeletingProject(false);
     }
   }
@@ -217,12 +218,12 @@ function MembersPanel({ projectId, members, canManage, onChange }: { projectId: 
       setPick({ user_id: "", role: "engineer" });
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       onChange();
-    } catch (err: any) { toast.error(err.message); }
+    } catch (err: any) { toast.error(getErrorMessage(err, "Failed to add project member")); }
   }
 
   async function remove(id: string) {
     try { await removeFn({ data: { id } }); onChange(); }
-    catch (err: any) { toast.error(err.message); }
+    catch (err: any) { toast.error(getErrorMessage(err, "Failed to remove project member")); }
   }
 
   return (
