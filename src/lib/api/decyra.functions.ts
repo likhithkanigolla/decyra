@@ -21,6 +21,35 @@ async function pgOne<T = any>(sql: string, params?: any[]) {
   return queryOne<T>(sql, params);
 }
 
+function assertDraftAdrOwner(
+  adr: { status: string; author_id: string },
+  userId: string
+) {
+  if (adr.status === "draft" && adr.author_id !== userId) {
+    throw new Error("ADR not found.");
+  }
+}
+
+async function assertDraftAdrVisible(context: FlexibleAuthContext, adrId: string) {
+  const adr = context.isDatabaseLocal
+    ? await pgOne<{ status: string; author_id: string }>(
+        "SELECT status, author_id FROM adrs WHERE id = $1",
+        [adrId]
+      )
+    : await context.supabase
+        .from("adrs")
+        .select("status, author_id")
+        .eq("id", adrId)
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (error) throw new Error(error.message);
+          return data;
+        });
+
+  if (!adr) throw new Error("ADR not found.");
+  assertDraftAdrOwner(adr, context.userId);
+}
+
 function assertRequiredAdrContent(adr: {
   title: string;
   context: string;
@@ -83,10 +112,9 @@ export const listProjects = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
+    const { supabase, userId, isDatabaseLocal } = context;
 
     if (isDatabaseLocal) {
-      const { userId } = context;
       const isAdminRow = await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]);
       const isAdmin = !!isAdminRow;
 
@@ -322,8 +350,9 @@ export const getProject = createServerFn({ method: "POST" })
         pgQuery(
           `SELECT id, full_id, title, status, tags, updated_at, author_id
            FROM adrs WHERE project_id = $1
+             AND (status <> 'draft' OR author_id = $2)
            ORDER BY adr_number DESC`,
-          [data.id]
+          [data.id, userId]
         ),
         pgOne<{ role: string }>(
           "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2",
@@ -369,6 +398,7 @@ export const getProject = createServerFn({ method: "POST" })
       .from("adrs")
       .select("id, full_id, title, status, tags, updated_at, author_id")
       .eq("project_id", data.id)
+      .or(`status.neq.draft,author_id.eq.${userId}`)
       .order("adr_number", { ascending: false });
     const { data: myMembership } = await supabase
       .from("project_members")
@@ -892,6 +922,7 @@ export const getAdr = createServerFn({ method: "POST" })
         [data.id]
       );
       if (!adr) throw new Error("ADR not found");
+      assertDraftAdrOwner(adr, userId);
 
       // Shape to match Supabase nested format
       const shaped = {
@@ -954,6 +985,7 @@ export const getAdr = createServerFn({ method: "POST" })
       .maybeSingle();
     if (error) throw new Error(error.message);
     if (!adr) throw new Error("ADR not found");
+    assertDraftAdrOwner(adr, userId);
     const [{ data: approvals }, { data: comments }, { data: versions }, { data: member }, { data: adminRole }] =
       await Promise.all([
         supabase
@@ -1079,7 +1111,24 @@ export const updateAdrStatus = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
+    const { supabase, userId, isDatabaseLocal } = context;
+
+    const adr = isDatabaseLocal
+      ? await pgOne<{ status: string; author_id: string }>(
+          "SELECT status, author_id FROM adrs WHERE id = $1",
+          [data.id]
+        )
+      : await supabase
+          .from("adrs")
+          .select("status, author_id")
+          .eq("id", data.id)
+          .maybeSingle()
+          .then(({ data: row, error }) => {
+            if (error) throw new Error(error.message);
+            return row;
+          });
+    if (!adr) throw new Error("ADR not found.");
+    assertDraftAdrOwner(adr, userId);
 
     if (data.status === "approved") {
       if (isDatabaseLocal) {
@@ -1151,6 +1200,7 @@ export const approveAdr = createServerFn({ method: "POST" })
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
     const { supabase, userId, isDatabaseLocal } = context;
+    await assertDraftAdrVisible(context, data.adr_id);
 
     if (isDatabaseLocal) {
       await pgQuery(
@@ -1191,6 +1241,7 @@ export const addComment = createServerFn({ method: "POST" })
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
     const { supabase, userId, isDatabaseLocal } = context;
+    await assertDraftAdrVisible(context, data.adr_id);
 
     if (isDatabaseLocal) {
       await pgQuery(
@@ -1213,10 +1264,9 @@ export const dashboardStats = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
+    const { supabase, userId, isDatabaseLocal } = context;
 
     if (isDatabaseLocal) {
-      const { userId } = context;
       const isAdminRow = await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]);
       const isAdmin = !!isAdminRow;
 
@@ -1228,7 +1278,9 @@ export const dashboardStats = createServerFn({ method: "POST" })
             `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
                     p.name AS proj_name, p.code AS proj_code
              FROM adrs a JOIN projects p ON p.id = a.project_id
-             ORDER BY a.updated_at DESC LIMIT 20`
+             WHERE (a.status <> 'draft' OR a.author_id = $1)
+             ORDER BY a.updated_at DESC LIMIT 20`,
+            [userId]
           ),
           pgQuery("SELECT id, name, code FROM projects"),
         ]);
@@ -1240,8 +1292,9 @@ export const dashboardStats = createServerFn({ method: "POST" })
              FROM adrs a 
              JOIN projects p ON p.id = a.project_id
              JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
+             WHERE (a.status <> 'draft' OR a.author_id = $2)
              ORDER BY a.updated_at DESC LIMIT 20`,
-             [userId]
+             [userId, userId]
           ),
           pgQuery(
             `SELECT p.id, p.name, p.code FROM projects p
@@ -1266,6 +1319,7 @@ export const dashboardStats = createServerFn({ method: "POST" })
     const { data: adrs } = await supabase
       .from("adrs")
       .select("id, status, full_id, title, updated_at, project_id, projects(name, code)")
+      .or(`status.neq.draft,author_id.eq.${userId}`)
       .order("updated_at", { ascending: false })
       .limit(20);
     const counts = { total: 0, draft: 0, under_review: 0, approved: 0, published: 0, superseded: 0 };
@@ -1500,10 +1554,11 @@ export const updateAdr = createServerFn({ method: "POST" })
     if (isDatabaseLocal) {
       // Check project_member or admin
       const adr = await pgOne<any>(
-        "SELECT status, project_id, title, context, decision, consequences FROM adrs WHERE id = $1",
+        "SELECT status, project_id, author_id, title, context, decision, consequences FROM adrs WHERE id = $1",
         [data.id]
       );
       if (!adr) throw new Error("ADR not found");
+      assertDraftAdrOwner(adr, userId);
       const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'", [userId]));
       const isProjectMember = !!(await pgOne("SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2", [userId, adr.project_id]));
       if (!isAdmin && !isProjectMember) throw new Error("Not authorized to edit this ADR");
@@ -1561,10 +1616,11 @@ export const updateAdr = createServerFn({ method: "POST" })
 
     const { data: adrInfo, error: fetchErr } = await supabase
       .from("adrs")
-      .select("status, title, context, decision, consequences")
+      .select("status, author_id, title, context, decision, consequences")
       .eq("id", data.id)
       .single();
     if (fetchErr) throw new Error(fetchErr.message);
+    assertDraftAdrOwner(adrInfo, userId);
     assertRequiredAdrContent({
       title: data.title ?? adrInfo.title,
       context: data.context ?? adrInfo.context,
@@ -1627,6 +1683,9 @@ export const searchAdrs = createServerFn({ method: "POST" })
       
       if (data.status) { sql += ` AND a.status = $${p++}`; params.push(data.status); }
       if (data.project_id) { sql += ` AND a.project_id = $${p++}`; params.push(data.project_id); }
+      const visibilityParamIndex = p++;
+      params.push(userId);
+      sql += ` AND (a.status <> 'draft' OR a.author_id = $${visibilityParamIndex})`;
       sql += " ORDER BY a.updated_at DESC LIMIT 50";
       const result = await pgQuery(sql, params);
       return (result.rows ?? []).map((a: any) => ({ ...a, projects: { name: a.proj_name, code: a.proj_code } }));
@@ -1634,14 +1693,16 @@ export const searchAdrs = createServerFn({ method: "POST" })
 
     let query = supabase
       .from("adrs")
-      .select("id, full_id, title, status, tags, updated_at, project_id, projects(name,code)")
+      .select("id, full_id, title, status, tags, updated_at, project_id, author_id, projects(name,code)")
       .or(`title.ilike.${like},context.ilike.${like},decision.ilike.${like},full_id.ilike.${like}`)
       .order("updated_at", { ascending: false })
       .limit(50);
     if (data.status) query = query.eq("status", data.status);
     if (data.project_id) query = query.eq("project_id", data.project_id);
     const { data: results } = await query;
-    return results ?? [];
+    return (results ?? [])
+      .filter((adr) => adr.status !== "draft" || adr.author_id === userId)
+      .map(({ author_id: _authorId, ...adr }) => adr);
   });
 
 // ─── getAdrRelationships ──────────────────────────────────────────────────────
@@ -1651,7 +1712,8 @@ export const getAdrRelationships = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ adr_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
+    const { supabase, userId, isDatabaseLocal } = context;
+    await assertDraftAdrVisible(context, data.adr_id);
 
     if (isDatabaseLocal) {
       const result = await pgQuery(
@@ -1661,17 +1723,34 @@ export const getAdrRelationships = createServerFn({ method: "POST" })
          FROM adr_relationships r
          JOIN adrs sa ON sa.id = r.source_adr_id
          JOIN adrs ta ON ta.id = r.target_adr_id
-         WHERE r.source_adr_id = $1 OR r.target_adr_id = $1`,
-        [data.adr_id]
+         WHERE (r.source_adr_id = $1 OR r.target_adr_id = $1)
+           AND (sa.status <> 'draft' OR sa.author_id = $2)
+           AND (ta.status <> 'draft' OR ta.author_id = $2)`,
+        [data.adr_id, userId]
       );
       return result.rows ?? [];
     }
 
-    const { data: rels } = await supabase
+    const { data: rels, error } = await supabase
       .from("adr_relationships")
       .select("*, source:adrs!source_adr_id(full_id,title), target:adrs!target_adr_id(full_id,title,status)")
       .or(`source_adr_id.eq.${data.adr_id},target_adr_id.eq.${data.adr_id}`);
-    return rels ?? [];
+    if (error) throw new Error(error.message);
+    const relatedAdrIds = Array.from(new Set((rels ?? []).flatMap((rel) => [rel.source_adr_id, rel.target_adr_id])));
+    if (relatedAdrIds.length === 0) return [];
+    const { data: relatedAdrs, error: relatedError } = await supabase
+      .from("adrs")
+      .select("id, status, author_id")
+      .in("id", relatedAdrIds);
+    if (relatedError) throw new Error(relatedError.message);
+    const visibleAdrIds = new Set(
+      (relatedAdrs ?? [])
+        .filter((adr) => adr.status !== "draft" || adr.author_id === userId)
+        .map((adr) => adr.id)
+    );
+    return (rels ?? []).filter(
+      (rel) => visibleAdrIds.has(rel.source_adr_id) && visibleAdrIds.has(rel.target_adr_id)
+    );
   });
 
 // ─── addAdrRelationship ───────────────────────────────────────────────────────
@@ -1688,6 +1767,10 @@ export const addAdrRelationship = createServerFn({ method: "POST" })
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
     const { supabase, userId, isDatabaseLocal } = context;
+    await Promise.all([
+      assertDraftAdrVisible(context, data.source_adr_id),
+      assertDraftAdrVisible(context, data.target_adr_id),
+    ]);
 
     if (isDatabaseLocal) {
       await pgQuery(
@@ -1753,6 +1836,7 @@ export const publishAdr = createServerFn({ method: "POST" })
       adr = d2 ? { ...d2, proj_code: d2.projects?.code, proj_name: d2.projects?.name, repo_url: d2.projects?.repo_url, branch: d2.projects?.branch, adr_path: d2.projects?.adr_path, git_pat: d2.projects?.git_pat } : null;
     }
     if (!adr) throw new Error("ADR not found");
+    assertDraftAdrOwner(adr, userId);
 
     // Generate Markdown
     const { generateAdrMarkdown } = await import("@/lib/adr-markdown");
@@ -1820,7 +1904,7 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
+    const { supabase, userId, isDatabaseLocal } = context;
 
     // Extract keywords (longer than 4 chars)
     const text = `${data.title} ${data.context}`.toLowerCase();
@@ -1850,7 +1934,10 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
       words.forEach(w => params.push(`%${w}%`));
 
       const conditions = words.map((_, i) => `(lower(a.title) LIKE $${offset + i + 1} OR lower(a.context) LIKE $${offset + i + 1})`);
-      sql += ` WHERE (${conditions.join(" OR ")}) LIMIT 20`;
+      const visibilityParamIndex = params.length + 1;
+      params.push(userId);
+      sql += ` WHERE (a.status <> 'draft' OR a.author_id = $${visibilityParamIndex})
+               AND (${conditions.join(" OR ")}) LIMIT 20`;
 
       const result = await pgQuery(sql, params);
       
@@ -1868,13 +1955,15 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
     const orCondition = words.map(w => `title.ilike.%${w}%,context.ilike.%${w}%`).join(",");
     const { data: results, error } = await supabase
       .from("adrs")
-      .select("id, full_id, title, context")
+      .select("id, full_id, title, context, status, author_id")
       .or(orCondition)
       .limit(20);
       
     if (error) throw new Error(error.message);
     
-    const scored = (results ?? []).map(r => {
+    const scored = (results ?? [])
+      .filter((adr) => adr.status !== "draft" || adr.author_id === userId)
+      .map(r => {
       const str = `${r.title} ${r.context}`.toLowerCase();
       let score = 0;
       words.forEach(w => { if (str.includes(w)) score++; });
@@ -1891,40 +1980,64 @@ export const getProjectForGraph = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
+    const { supabase, userId, isDatabaseLocal } = context;
 
     if (isDatabaseLocal) {
       const [adrsRow, relsRow] = await Promise.all([
         pgQuery(
-          `SELECT DISTINCT a.id, a.full_id, a.title, a.status 
-           FROM adrs a 
-           WHERE a.project_id = $1 
-              OR a.id IN (SELECT source_adr_id FROM adr_relationships r JOIN adrs ta ON ta.id = r.target_adr_id WHERE ta.project_id = $1)
-              OR a.id IN (SELECT target_adr_id FROM adr_relationships r JOIN adrs sa ON sa.id = r.source_adr_id WHERE sa.project_id = $1)`, 
-          [data.project_id]
+          `SELECT DISTINCT a.id, a.full_id, a.title, a.status
+           FROM adrs a
+           WHERE (a.status <> 'draft' OR a.author_id = $2)
+             AND (a.project_id = $1
+               OR a.id IN (SELECT source_adr_id FROM adr_relationships r JOIN adrs ta ON ta.id = r.target_adr_id WHERE ta.project_id = $1)
+               OR a.id IN (SELECT target_adr_id FROM adr_relationships r JOIN adrs sa ON sa.id = r.source_adr_id WHERE sa.project_id = $1))`,
+          [data.project_id, userId]
         ),
         pgQuery(
           `SELECT r.id, r.source_adr_id, r.target_adr_id, r.rel_type
            FROM adr_relationships r
-           WHERE r.source_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)
-              OR r.target_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)`,
-          [data.project_id]
+           JOIN adrs sa ON sa.id = r.source_adr_id
+           JOIN adrs ta ON ta.id = r.target_adr_id
+           WHERE (r.source_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)
+              OR r.target_adr_id IN (SELECT id FROM adrs WHERE project_id = $1))
+             AND (sa.status <> 'draft' OR sa.author_id = $2)
+             AND (ta.status <> 'draft' OR ta.author_id = $2)`,
+          [data.project_id, userId]
         ),
       ]);
       return { adrs: adrsRow.rows ?? [], relationships: relsRow.rows ?? [] };
     }
 
-    const { data: adrsInProject } = await supabase.from("adrs").select("id").eq("project_id", data.project_id);
+    const { data: adrsInProject, error: projectAdrsError } = await supabase
+      .from("adrs")
+      .select("id")
+      .eq("project_id", data.project_id)
+      .or(`status.neq.draft,author_id.eq.${userId}`);
+    if (projectAdrsError) throw new Error(projectAdrsError.message);
     const projectAdrIds = adrsInProject?.map((a: any) => a.id) ?? [];
     if (projectAdrIds.length === 0) return { adrs: [], relationships: [] };
 
-    const { data: rels } = await supabase.from("adr_relationships").select("id, source_adr_id, target_adr_id, rel_type")
+    const { data: rels, error: relationshipsError } = await supabase.from("adr_relationships").select("id, source_adr_id, target_adr_id, rel_type")
       .or(`source_adr_id.in.(${projectAdrIds.join(',')}),target_adr_id.in.(${projectAdrIds.join(',')})`);
+    if (relationshipsError) throw new Error(relationshipsError.message);
       
     const allAdrIds = new Set(projectAdrIds);
     rels?.forEach((r: any) => { allAdrIds.add(r.source_adr_id); allAdrIds.add(r.target_adr_id); });
 
-    const { data: adrs } = await supabase.from("adrs").select("id, full_id, title, status").in("id", Array.from(allAdrIds));
+    const { data: adrs, error: adrsError } = await supabase
+      .from("adrs")
+      .select("id, full_id, title, status, author_id")
+      .in("id", Array.from(allAdrIds));
+    if (adrsError) throw new Error(adrsError.message);
+    const visibleAdrs = (adrs ?? []).filter(
+      (adr) => adr.status !== "draft" || adr.author_id === userId
+    );
+    const visibleAdrIds = new Set(visibleAdrs.map((adr) => adr.id));
 
-    return { adrs: adrs ?? [], relationships: rels ?? [] };
+    return {
+      adrs: visibleAdrs.map(({ author_id: _authorId, ...adr }) => adr),
+      relationships: (rels ?? []).filter(
+        (rel) => visibleAdrIds.has(rel.source_adr_id) && visibleAdrIds.has(rel.target_adr_id)
+      ),
+    };
   });

@@ -58,7 +58,10 @@ function AdrDetail() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingAdr, setDeletingAdr] = useState(false);
 
-  const { data } = useQuery({ queryKey: ["adr", adrId], queryFn: () => getAdrFn({ data: { id: adrId } }) });
+  const { data, isError, isLoading } = useQuery({
+    queryKey: ["adr", adrId],
+    queryFn: () => getAdrFn({ data: { id: adrId } }),
+  });
   const { data: rels, refetch: refetchRels } = useQuery({
     queryKey: ["adr-rels", adrId],
     queryFn: () => getRelFn({ data: { adr_id: adrId } }),
@@ -171,7 +174,8 @@ function AdrDetail() {
     }
   }
 
-  if (!data) return <div className="p-8 text-sm text-muted-foreground animate-pulse">Loading…</div>;
+  if (isLoading) return <div className="p-8 text-sm text-muted-foreground animate-pulse">Loading…</div>;
+  if (isError || !data) return <div className="p-8 text-sm text-muted-foreground">ADR not found.</div>;
   if (!adr) return <div className="p-8 text-sm text-muted-foreground">ADR not found.</div>;
 
   const dc = adr.design_changes ?? {};
