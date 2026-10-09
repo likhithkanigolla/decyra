@@ -6,6 +6,7 @@ import { simpleGit } from "simple-git";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { randomBytes } from "node:crypto";
 import { parseAdrMarkdown } from "@/lib/adr-markdown";
 import { getDatabaseConfig } from "@/integrations/database/config";
 import * as Y from "yjs";
@@ -282,6 +283,106 @@ async function assertProjectManager(context: FlexibleAuthContext, projectId: str
     throw new Error("Only admins or project admins can manage project data.");
   }
 }
+
+async function getGitHubSyncProject(context: FlexibleAuthContext, projectId: string) {
+  if (context.isDatabaseLocal) {
+    return pgOne<{ id: string; repo_url: string | null }>(
+      "SELECT id, repo_url FROM projects WHERE id = $1",
+      [projectId],
+    );
+  }
+  const { data: project, error } = await context.supabase
+    .from("projects")
+    .select("id, repo_url")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return project;
+}
+
+function validateGitHubRepositoryUrl(repoUrl: string | null) {
+  let repo: URL;
+  try {
+    repo = new URL(repoUrl ?? "");
+  } catch {
+    throw new Error("Configure an HTTPS GitHub repository URL before enabling sync.");
+  }
+  if (
+    repo.protocol !== "https:" ||
+    repo.hostname.toLowerCase() !== "github.com" ||
+    repo.username ||
+    repo.password ||
+    repo.port ||
+    repo.search ||
+    repo.hash ||
+    repo.pathname.replace(/\.git$/i, "").split("/").filter(Boolean).length !== 2
+  ) {
+    throw new Error("Configure an HTTPS GitHub repository URL before enabling sync.");
+  }
+}
+
+async function saveGitHubSyncConfiguration(
+  context: FlexibleAuthContext,
+  projectId: string,
+  secret: string | null,
+) {
+  if (context.isDatabaseLocal) {
+    if (secret) {
+      await pgQuery(
+        `INSERT INTO github_sync_secrets (project_id, secret)
+         VALUES ($1, $2)
+         ON CONFLICT (project_id) DO UPDATE SET secret = EXCLUDED.secret, created_at = now()`,
+        [projectId, secret],
+      );
+    }
+    await pgQuery(
+      "UPDATE projects SET github_sync_enabled = $1, github_sync_last_commit = NULL WHERE id = $2",
+      [Boolean(secret), projectId],
+    );
+    if (!secret) await pgQuery("DELETE FROM github_sync_secrets WHERE project_id = $1", [projectId]);
+    return;
+  }
+
+  const { supabase } = context;
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  if (secret) {
+    const { error } = await supabaseAdmin
+      .from("github_sync_secrets")
+      .upsert({ project_id: projectId, secret });
+    if (error) throw new Error(error.message);
+  }
+  const { error } = await supabase
+    .from("projects")
+    .update({ github_sync_enabled: Boolean(secret), github_sync_last_commit: null })
+    .eq("id", projectId);
+  if (error) throw new Error(error.message);
+  if (!secret) {
+    const { error: secretError } = await supabaseAdmin
+      .from("github_sync_secrets")
+      .delete()
+      .eq("project_id", projectId);
+    if (secretError) throw new Error(secretError.message);
+  }
+}
+
+export const configureGitHubSync = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((data: unknown) =>
+    z.object({ project_id: z.string().uuid(), enabled: z.boolean() }).parse(data),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    await assertProjectManager(context, data.project_id);
+
+    const project = await getGitHubSyncProject(context, data.project_id);
+    if (!project) throw new Error("Project not found.");
+
+    if (data.enabled) validateGitHubRepositoryUrl(project.repo_url);
+
+    const secret = data.enabled ? randomBytes(32).toString("hex") : null;
+    await saveGitHubSyncConfiguration(context, project.id, secret);
+    return { enabled: data.enabled, webhook_secret: secret };
+  });
 
 // ─── getMyContext ─────────────────────────────────────────────────────────────
 
@@ -566,7 +667,7 @@ export const getProject = createServerFn({ method: "POST" })
           [data.id],
         ),
         pgQuery(
-          `SELECT id, full_id, title, status, tags, updated_at, author_id
+          `SELECT id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at
            FROM adrs WHERE project_id = $1
              AND (status <> 'draft' OR author_id = $2)
            ORDER BY adr_number DESC`,
@@ -614,7 +715,7 @@ export const getProject = createServerFn({ method: "POST" })
       .eq("project_id", data.id);
     const { data: adrs } = await supabase
       .from("adrs")
-      .select("id, full_id, title, status, tags, updated_at, author_id")
+      .select("id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at")
       .eq("project_id", data.id)
       .or(`status.neq.draft,author_id.eq.${userId}`)
       .order("adr_number", { ascending: false });
@@ -2921,10 +3022,13 @@ export const publishAdr = createServerFn({ method: "POST" })
 
     // Attempt Git push (non-blocking if no repo configured)
     let gitCommitHash: string | undefined;
+    let repositoryPath: string | undefined;
     if (adr.repo_url) {
       try {
         const { pushAdrToGit } = await import("@/lib/api/git.server");
-        gitCommitHash = await pushAdrToGit({ adr, markdown, publisherUserId: userId });
+        const pushResult = await pushAdrToGit({ adr, markdown, publisherUserId: userId });
+        gitCommitHash = pushResult.commitHash;
+        repositoryPath = pushResult.repositoryPath;
       } catch (err: any) {
         console.warn("Git push failed:", err);
         throw new Error(`Git push failed: ${err.message}`);
@@ -2956,10 +3060,12 @@ export const publishAdr = createServerFn({ method: "POST" })
          VALUES ($1, $2, $3, $4, $5)`,
         [data.adr_id, nextVersion, markdown, gitCommitHash ?? null, userId],
       );
-      await pgQuery("UPDATE adrs SET status = 'published', current_version = $1 WHERE id = $2", [
-        nextVersion,
-        data.adr_id,
-      ]);
+      await pgQuery(
+        `UPDATE adrs SET status = 'published', current_version = $1,
+         repository_path = COALESCE($2, repository_path), repository_deleted_at = NULL
+         WHERE id = $3`,
+        [nextVersion, repositoryPath ?? null, data.adr_id],
+      );
       await publishAdrCollaborationSignal(context, data.adr_id, "status", "published");
     } else {
       await supabase.from("published_versions").insert({
@@ -2971,7 +3077,12 @@ export const publishAdr = createServerFn({ method: "POST" })
       });
       await supabase
         .from("adrs")
-        .update({ status: "published", current_version: nextVersion })
+        .update({
+          status: "published",
+          current_version: nextVersion,
+          ...(repositoryPath ? { repository_path: repositoryPath } : {}),
+          repository_deleted_at: null,
+        })
         .eq("id", data.adr_id);
       await publishAdrCollaborationSignal(context, data.adr_id, "status", "published");
     }

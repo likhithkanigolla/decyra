@@ -132,6 +132,8 @@ export type Database = {
           id: string
           major_impacts: Json
           project_id: string
+          repository_deleted_at: string | null
+          repository_path: string | null
           references_data: Json
           status: Database["public"]["Enums"]["adr_status"]
           tags: string[]
@@ -152,6 +154,8 @@ export type Database = {
           id?: string
           major_impacts?: Json
           project_id: string
+          repository_deleted_at?: string | null
+          repository_path?: string | null
           references_data?: Json
           status?: Database["public"]["Enums"]["adr_status"]
           tags?: string[]
@@ -172,6 +176,8 @@ export type Database = {
           id?: string
           major_impacts?: Json
           project_id?: string
+          repository_deleted_at?: string | null
+          repository_path?: string | null
           references_data?: Json
           status?: Database["public"]["Enums"]["adr_status"]
           tags?: string[]
@@ -314,6 +320,32 @@ export type Database = {
           },
         ]
       }
+      github_sync_secrets: {
+        Row: {
+          created_at: string
+          project_id: string
+          secret: string
+        }
+        Insert: {
+          created_at?: string
+          project_id: string
+          secret: string
+        }
+        Update: {
+          created_at?: string
+          project_id?: string
+          secret?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "github_sync_secrets_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: true
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       projects: {
         Row: {
           adr_path: string | null
@@ -323,7 +355,10 @@ export type Database = {
           created_at: string
           created_by: string | null
           description: string | null
+          github_sync_enabled: boolean
+          github_sync_last_commit: string | null
           id: string
+          git_pat: string | null
           name: string
           repo_url: string | null
           required_approvals: number
@@ -337,7 +372,10 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           description?: string | null
+          github_sync_enabled?: boolean
+          github_sync_last_commit?: string | null
           id?: string
+          git_pat?: string | null
           name: string
           repo_url?: string | null
           required_approvals?: number
@@ -351,7 +389,10 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           description?: string | null
+          github_sync_enabled?: boolean
+          github_sync_last_commit?: string | null
           id?: string
+          git_pat?: string | null
           name?: string
           repo_url?: string | null
           required_approvals?: number
