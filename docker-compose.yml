@@ -34,7 +34,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: decyra_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -52,7 +52,7 @@ services:
     ports:
       - "17053:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s

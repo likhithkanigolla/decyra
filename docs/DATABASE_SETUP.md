@@ -2,6 +2,8 @@
 
 This project supports both **Supabase** (cloud) and **local PostgreSQL** for development.
 
+Local Docker development uses PostgreSQL 18. PostgreSQL major-version changes do not automatically convert an existing database volume. Back up a PostgreSQL 16 database before switching and restore it into PostgreSQL 18; keep the old volume until the restored database is verified. Do not run `npm run db:reset` as part of this upgrade because it deletes database volumes.
+
 ## Quick Start
 
 ### Option 1: Local PostgreSQL (Recommended for Development)
