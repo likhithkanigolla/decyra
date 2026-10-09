@@ -20,7 +20,7 @@ Architecture Hub (internally referred to as Decyra) is a modern, collaborative p
 - **State Management**: [TanStack Query](https://tanstack.com/query/latest)
 - **Styling**: Tailwind CSS + Radix UI Primitives
 - **Graph Visualization**: [React Flow](https://reactflow.dev/)
-- **Database**: PostgreSQL (via local `pg` client or Supabase)
+- **Database**: PostgreSQL 18 (via local `pg` client or Supabase)
 - **Icons**: Lucide React
 - **Markdown Editor**: `@uiw/react-md-editor`
 
