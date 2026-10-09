@@ -125,7 +125,7 @@ export const createProject = createServerFn({ method: "POST" })
           .string()
           .min(2)
           .max(16)
-          .regex(/^[A-Z0-9]+$/, "Use uppercase letters and digits"),
+          .regex(/^[A-Z0-9]+(?:-[A-Z0-9]+)*$/, "Use uppercase letters, digits, and single hyphens between segments"),
         description: z.string().optional(),
         repo_url: z.string().optional(),
         branch: z.string().optional(),

@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { createProject } from "@/lib/api/decyra.functions";
+import { getErrorMessage } from "@/lib/utils";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/projects/new")({
@@ -23,7 +24,7 @@ function NewProject() {
       toast.success("Project created");
       navigate({ to: "/projects/$projectId", params: { projectId: p.id } });
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(getErrorMessage(err, "Failed to create project"));
     } finally { setBusy(false); }
   }
 
@@ -40,7 +41,8 @@ function NewProject() {
         </Field>
         <Field label="Project code" hint="Used as the ADR ID prefix (e.g. UMS → UMS-ADR-001)">
           <input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })}
-            placeholder="UMS" maxLength={16}
+            placeholder="UMS" maxLength={16} pattern="[A-Z0-9]+(-[A-Z0-9]+)*"
+            title="Use uppercase letters and digits, with single hyphens between segments."
             className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm font-mono uppercase" />
         </Field>
         <Field label="Description">

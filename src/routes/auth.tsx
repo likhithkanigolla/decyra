@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { loginLocalFn, signUpLocalFn, checkIsFirstRunFn, lookupEmailByUsernameFn } from "@/lib/api/decyra.functions";
+import { getErrorMessage } from "@/lib/utils";
 import { toast } from "sonner";
 
 const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
@@ -113,7 +114,7 @@ function AuthPage() {
         navigate({ to: "/dashboard" });
       }
     } catch (err: any) {
-      toast.error(err.message ?? "Authentication failed");
+      toast.error(getErrorMessage(err, "Authentication failed"));
     } finally {
       setLoading(false);
     }

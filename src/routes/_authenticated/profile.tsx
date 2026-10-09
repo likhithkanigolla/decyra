@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { getMyContext, updateProfile, changePassword } from "@/lib/api/decyra.functions";
+import { getErrorMessage } from "@/lib/utils";
 import { useState } from "react";
 import { toast } from "sonner";
 import { User, Lock, Shield, Check } from "lucide-react";
@@ -47,7 +48,7 @@ function ProfilePage() {
       toast.success("Profile updated");
       qc.invalidateQueries({ queryKey: ["me"] });
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(getErrorMessage(err, "Failed to update profile"));
     } finally { setProfileBusy(false); }
   }
 
@@ -63,7 +64,7 @@ function ProfilePage() {
       toast.success("Password changed successfully");
       setPwForm({ current_password: "", new_password: "", confirm: "" });
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(getErrorMessage(err, "Failed to change password"));
     } finally { setPwBusy(false); }
   }
 

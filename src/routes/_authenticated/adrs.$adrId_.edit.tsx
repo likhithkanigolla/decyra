@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { getAdr, updateAdr } from "@/lib/api/decyra.functions";
 import { AdrForm, DEFAULT_ADR_FORM, type AdrFormData } from "@/components/decyra/AdrForm";
+import { getErrorMessage } from "@/lib/utils";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
@@ -65,7 +66,7 @@ function EditAdr() {
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
       navigate({ to: "/adrs/$adrId", params: { adrId } });
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(getErrorMessage(err, "Failed to update ADR"));
     } finally {
       setBusy(false);
     }

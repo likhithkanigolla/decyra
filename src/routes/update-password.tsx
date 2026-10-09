@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { getErrorMessage } from "@/lib/utils";
 
 export const Route = createFileRoute("/update-password")({
   head: () => ({ meta: [{ title: "Update Password — Decyra" }] }),
@@ -39,7 +40,7 @@ function UpdatePassword() {
       toast.success("Password updated successfully!");
       navigate({ to: "/dashboard" });
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to update password.");
+      toast.error(getErrorMessage(err, "Failed to update password."));
     } finally {
       setLoading(false);
     }

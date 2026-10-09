@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { getProject, updateProject } from "@/lib/api/decyra.functions";
+import { getErrorMessage } from "@/lib/utils";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
@@ -78,7 +79,7 @@ function EditProject() {
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       navigate({ to: "/projects/$projectId", params: { projectId } });
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(getErrorMessage(err, "Failed to update project"));
     } finally {
       setBusy(false);
     }
