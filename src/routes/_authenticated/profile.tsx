@@ -23,7 +23,7 @@ function ProfilePage() {
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: () => fetchMe() });
 
   // Profile form
-  const [profileForm, setProfileForm] = useState({ full_name: "", avatar_url: "" });
+  const [profileForm, setProfileForm] = useState({ full_name: "", username: "", avatar_url: "" });
   const [profileInitialized, setProfileInitialized] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
 
@@ -35,6 +35,7 @@ function ProfilePage() {
   if (me?.profile && !profileInitialized) {
     setProfileForm({
       full_name: me.profile.full_name ?? "",
+      username: me.profile.username ?? "",
       avatar_url: me.profile.avatar_url ?? "",
     });
     setProfileInitialized(true);
@@ -44,7 +45,13 @@ function ProfilePage() {
     e.preventDefault();
     setProfileBusy(true);
     try {
-      await updateProfileFn({ data: { full_name: profileForm.full_name, avatar_url: profileForm.avatar_url } });
+      await updateProfileFn({
+        data: {
+          full_name: profileForm.full_name,
+          username: profileForm.username.trim() ? profileForm.username.trim().toLowerCase() : null,
+          avatar_url: profileForm.avatar_url,
+        },
+      });
       toast.success("Profile updated");
       qc.invalidateQueries({ queryKey: ["me"] });
     } catch (err: any) {
@@ -103,6 +110,17 @@ function ProfilePage() {
               value={profileForm.full_name}
               onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
               placeholder="Jane Smith"
+              className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+          </Field>
+          <Field label="Username" hint="Optional; 3–30 letters, numbers, dots, underscores, or hyphens.">
+            <input
+              value={profileForm.username}
+              onChange={(e) => setProfileForm({ ...profileForm, username: e.target.value.toLowerCase() })}
+              minLength={3}
+              maxLength={30}
+              pattern="[A-Za-z0-9._-]+"
+              placeholder="jane.smith"
               className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
             />
           </Field>

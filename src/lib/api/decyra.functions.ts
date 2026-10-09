@@ -421,7 +421,7 @@ export const createUser = createServerFn({ method: "POST" })
         email: z.string().email(),
         password: z.string().min(8),
         full_name: z.string().min(1).max(200),
-        username: z.string().min(3).max(30).optional(),
+        username: z.string().trim().min(3).max(30).regex(/^[a-zA-Z0-9._-]+$/).transform((value) => value.toLowerCase()).optional(),
         role: z.enum(["admin", "member"]).default("member"),
       })
       .parse(d)
@@ -1334,29 +1334,62 @@ export const updateProfile = createServerFn({ method: "POST" })
   .validator((d: unknown) =>
     z.object({
       full_name: z.string().min(1).max(200),
+      username: z.string().trim().min(3).max(30).regex(/^[a-zA-Z0-9._-]+$/).nullable().optional(),
       avatar_url: z.string().url().optional().or(z.literal("")),
     }).parse(d)
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
     const { supabase, userId, isDatabaseLocal } = context;
+    const username = data.username === undefined ? undefined : data.username?.toLowerCase() ?? null;
 
     if (isDatabaseLocal) {
-      await pgQuery(
-        "UPDATE profiles SET full_name = $1, avatar_url = $2 WHERE id = $3",
-        [data.full_name, data.avatar_url || null, userId]
-      );
-      await pgQuery(
-        "UPDATE local_users SET full_name = $1 WHERE id = $2",
-        [data.full_name, userId]
-      );
+      if (username) {
+        const existing = await pgOne(
+          `SELECT 1 FROM profiles WHERE lower(username) = $1 AND id <> $2
+           UNION ALL
+           SELECT 1 FROM local_users WHERE lower(username) = $1 AND id <> $2
+           LIMIT 1`,
+          [username, userId]
+        );
+        if (existing) throw new Error("That username is already in use.");
+      }
+      if (username === undefined) {
+        await pgQuery(
+          "UPDATE profiles SET full_name = $1, avatar_url = $2 WHERE id = $3",
+          [data.full_name, data.avatar_url || null, userId]
+        );
+        await pgQuery("UPDATE local_users SET full_name = $1 WHERE id = $2", [data.full_name, userId]);
+      } else {
+        await pgQuery(
+          "UPDATE profiles SET full_name = $1, username = $2, avatar_url = $3 WHERE id = $4",
+          [data.full_name, username, data.avatar_url || null, userId]
+        );
+        await pgQuery(
+          "UPDATE local_users SET full_name = $1, username = $2 WHERE id = $3",
+          [data.full_name, username, userId]
+        );
+      }
       return { ok: true };
     }
 
-    const { error } = await supabase
-      .from("profiles")
-      .update({ full_name: data.full_name, avatar_url: data.avatar_url || null })
-      .eq("id", userId);
+    if (username) {
+      const { data: existing, error: lookupError } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("username", username)
+        .neq("id", userId)
+        .maybeSingle();
+      if (lookupError) throw new Error(lookupError.message);
+      if (existing) throw new Error("That username is already in use.");
+    }
+
+    const updates: { full_name: string; avatar_url: string | null; username?: string | null } = {
+      full_name: data.full_name,
+      avatar_url: data.avatar_url || null,
+    };
+    if (username !== undefined) updates.username = username;
+    const { error } = await supabase.from("profiles").update(updates).eq("id", userId);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
