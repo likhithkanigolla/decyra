@@ -27,7 +27,9 @@ interface PushOptions {
  * Clone repo, write ADR file, commit, push, return commit hash.
  * Requires GIT_PAT env var (GitHub Personal Access Token) or SSH.
  */
-export async function pushAdrToGit(opts: PushOptions): Promise<string> {
+export async function pushAdrToGit(
+  opts: PushOptions,
+): Promise<{ commitHash: string; repositoryPath: string }> {
   const { adr, markdown } = opts;
 
   const gitPat = adr.git_pat || process.env.GIT_PAT;
@@ -55,8 +57,17 @@ export async function pushAdrToGit(opts: PushOptions): Promise<string> {
     await repoGit.addConfig("user.email", "decyra-bot@decyra.dev");
     await repoGit.addConfig("user.name", "Decyra Bot");
 
+    const normalizedAdrPath = (adr.adr_path || "").trim().replaceAll("\\", "/");
+    if (path.posix.isAbsolute(normalizedAdrPath) || normalizedAdrPath.split("/").includes("..")) {
+      throw new Error("The configured ADR path must stay inside the repository.");
+    }
+    const repositoryRoot = path.resolve(tmpDir);
+    const adrDir = path.resolve(repositoryRoot, normalizedAdrPath);
+    if (adrDir !== repositoryRoot && !adrDir.startsWith(`${repositoryRoot}${path.sep}`)) {
+      throw new Error("The configured ADR path must stay inside the repository.");
+    }
+
     // Write the ADR markdown file
-    const adrDir = path.join(tmpDir, adr.adr_path);
     fs.mkdirSync(adrDir, { recursive: true });
     const fileName = `${adr.full_id.toLowerCase().replace(/[^a-z0-9-]/g, "-")}.md`;
     const filePath = path.join(adrDir, fileName);
@@ -70,7 +81,10 @@ export async function pushAdrToGit(opts: PushOptions): Promise<string> {
 
     // Get the commit hash
     const log = await repoGit.log({ maxCount: 1 });
-    return log.latest?.hash ?? "unknown";
+    return {
+      commitHash: log.latest?.hash ?? "unknown",
+      repositoryPath: path.relative(repositoryRoot, filePath).split(path.sep).join("/"),
+    };
   } finally {
     // Cleanup temp directory
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}

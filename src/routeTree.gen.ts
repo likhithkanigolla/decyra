@@ -13,6 +13,7 @@ import { Route as UpdatePasswordRouteImport } from './routes/update-password'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiGithubSyncRouteImport } from './routes/api.github-sync'
 import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated/search'
 import { Route as AuthenticatedProfileRouteImport } from './routes/_authenticated/profile'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
@@ -44,6 +45,11 @@ const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGithubSyncRoute = ApiGithubSyncRouteImport.update({
+  id: '/api/github-sync',
+  path: '/api/github-sync',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedSearchRoute = AuthenticatedSearchRouteImport.update({
@@ -127,6 +133,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/profile': typeof AuthenticatedProfileRoute
   '/search': typeof AuthenticatedSearchRoute
+  '/api/github-sync': typeof ApiGithubSyncRoute
   '/adrs/$adrId': typeof AuthenticatedAdrsAdrIdRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRoute
   '/projects/new': typeof AuthenticatedProjectsNewRoute
@@ -145,6 +152,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/profile': typeof AuthenticatedProfileRoute
   '/search': typeof AuthenticatedSearchRoute
+  '/api/github-sync': typeof ApiGithubSyncRoute
   '/adrs/$adrId': typeof AuthenticatedAdrsAdrIdRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRoute
   '/projects/new': typeof AuthenticatedProjectsNewRoute
@@ -165,6 +173,7 @@ export interface FileRoutesById {
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/profile': typeof AuthenticatedProfileRoute
   '/_authenticated/search': typeof AuthenticatedSearchRoute
+  '/api/github-sync': typeof ApiGithubSyncRoute
   '/_authenticated/adrs/$adrId': typeof AuthenticatedAdrsAdrIdRoute
   '/_authenticated/projects/$projectId': typeof AuthenticatedProjectsProjectIdRoute
   '/_authenticated/projects/new': typeof AuthenticatedProjectsNewRoute
@@ -185,6 +194,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/profile'
     | '/search'
+    | '/api/github-sync'
     | '/adrs/$adrId'
     | '/projects/$projectId'
     | '/projects/new'
@@ -203,6 +213,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/profile'
     | '/search'
+    | '/api/github-sync'
     | '/adrs/$adrId'
     | '/projects/$projectId'
     | '/projects/new'
@@ -222,6 +233,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard'
     | '/_authenticated/profile'
     | '/_authenticated/search'
+    | '/api/github-sync'
     | '/_authenticated/adrs/$adrId'
     | '/_authenticated/projects/$projectId'
     | '/_authenticated/projects/new'
@@ -238,6 +250,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   UpdatePasswordRoute: typeof UpdatePasswordRoute
+  ApiGithubSyncRoute: typeof ApiGithubSyncRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -268,6 +281,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/github-sync': {
+      id: '/api/github-sync'
+      path: '/api/github-sync'
+      fullPath: '/api/github-sync'
+      preLoaderRoute: typeof ApiGithubSyncRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/search': {
@@ -407,6 +427,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   UpdatePasswordRoute: UpdatePasswordRoute,
+  ApiGithubSyncRoute: ApiGithubSyncRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

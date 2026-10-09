@@ -226,6 +226,11 @@ function AdrDetail() {
               <div className="flex items-center gap-2 mb-2">
                 <span className="font-mono text-sm font-bold text-primary">{adr.full_id}</span>
                 <StatusBadge status={adr.status} />
+                {adr.repository_deleted_at && (
+                  <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    Archived from repository
+                  </span>
+                )}
                 {adr.current_version > 0 && (
                   <span className="text-xs bg-accent px-1.5 py-0.5 rounded font-mono">v{adr.current_version}</span>
                 )}

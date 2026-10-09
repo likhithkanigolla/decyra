@@ -11,6 +11,7 @@ import {
   migrateAdrsFromRepository,
   exportProjectArchive,
   importProjectArchive,
+  configureGitHubSync,
 } from "@/lib/api/decyra.functions";
 import { getErrorMessage } from "@/lib/utils";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
@@ -46,6 +47,7 @@ function ProjectDetail() {
   const migrateAdrsFn = useServerFn(migrateAdrsFromRepository);
   const exportArchiveFn = useServerFn(exportProjectArchive);
   const importArchiveFn = useServerFn(importProjectArchive);
+  const configureGitHubSyncFn = useServerFn(configureGitHubSync);
   const qc = useQueryClient();
   const [filter, setFilter] = useState("");
   const [generatingDemo, setGeneratingDemo] = useState(false);
@@ -57,6 +59,8 @@ function ProjectDetail() {
   const [migrationSourcePath, setMigrationSourcePath] = useState("docs/adr");
   const [migrationSourceInitialized, setMigrationSourceInitialized] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [webhookSecret, setWebhookSecret] = useState<string | null>(null);
 
   useEffect(() => {
     if (!migrationSourceInitialized && data?.project) {
@@ -104,58 +108,6 @@ function ProjectDetail() {
       return;
     }
 
-    async function exportProjectData() {
-      setArchiveBusy(true);
-      try {
-        const archive = await exportArchiveFn({ data: { project_id: projectId } });
-        const blob = new Blob([JSON.stringify(archive, null, 2)], {
-          type: "application/json",
-        });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = `decyra-${project.code.toLowerCase()}-archive.json`;
-        link.click();
-        URL.revokeObjectURL(url);
-        toast.success(`Exported ${archive.adrs.length} visible ADRs and their relationships.`);
-      } catch (err: any) {
-        toast.error(getErrorMessage(err, "Failed to export project data"));
-      } finally {
-        setArchiveBusy(false);
-      }
-    }
-
-    async function importProjectData(event: React.ChangeEvent<HTMLInputElement>) {
-      const file = event.currentTarget.files?.[0];
-      event.currentTarget.value = "";
-      if (!file) return;
-      if (file.size > 10_000_000) {
-        toast.error("Project archive exceeds the 10 MB import limit.");
-        return;
-      }
-
-      setArchiveBusy(true);
-      try {
-        const archive = JSON.parse(await file.text()) as unknown;
-        const confirmed = window.confirm(
-          "Import this archive into the current project? Imported ADRs will be created as drafts, existing titles will be skipped, and the source archive will not be changed.",
-        );
-        if (!confirmed) return;
-
-        const result = await importArchiveFn({
-          data: { project_id: projectId, archive },
-        });
-        toast.success(
-          `Imported ${result.imported} ADRs and ${result.relationshipsImported} relationships; skipped ${result.skipped}.`,
-        );
-        await refetch();
-      } catch (err: any) {
-        toast.error(getErrorMessage(err, "Failed to import project archive"));
-      } finally {
-        setArchiveBusy(false);
-      }
-    }
-
     const confirmed = window.confirm(
       `Import ADR markdown files from ${migrationSourcePath || "the repository root"} in ${migrationSourceRepo} into this project? Existing ADR titles will be skipped.`,
     );
@@ -179,6 +131,74 @@ function ProjectDetail() {
       toast.error(getErrorMessage(err, "Failed to migrate ADRs from repository"));
     } finally {
       setMigratingRepo(false);
+    }
+  }
+
+  async function exportProjectData() {
+    setArchiveBusy(true);
+    try {
+      const archive = await exportArchiveFn({ data: { project_id: projectId } });
+      const blob = new Blob([JSON.stringify(archive, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `decyra-${project.code.toLowerCase()}-archive.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      toast.success(`Exported ${archive.adrs.length} visible ADRs and their relationships.`);
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to export project data"));
+    } finally {
+      setArchiveBusy(false);
+    }
+  }
+
+  async function toggleGitHubSync(enabled: boolean) {
+    setSyncBusy(true);
+    try {
+      const result = await configureGitHubSyncFn({
+        data: { project_id: projectId, enabled },
+      });
+      setWebhookSecret(result.webhook_secret);
+      toast.success(enabled ? "GitHub repository sync enabled." : "GitHub repository sync disabled.");
+      await refetch();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to configure GitHub repository sync"));
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function importProjectData(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (file.size > 10_000_000) {
+      toast.error("Project archive exceeds the 10 MB import limit.");
+      return;
+    }
+
+    setArchiveBusy(true);
+    try {
+      const archive = JSON.parse(await file.text()) as unknown;
+      const confirmed = window.confirm(
+        "Import this archive into the current project? Imported ADRs will be created as drafts, existing titles will be skipped, and the source archive will not be changed.",
+      );
+      if (!confirmed) return;
+
+      const result = await importArchiveFn({
+        data: { project_id: projectId, archive },
+      });
+      toast.success(
+        `Imported ${result.imported} ADRs and ${result.relationshipsImported} relationships; skipped ${result.skipped}.`,
+      );
+      await refetch();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to import project archive"));
+    } finally {
+      setArchiveBusy(false);
     }
   }
 
@@ -270,6 +290,68 @@ function ProjectDetail() {
           <span className="text-2xl font-semibold">{members.length}</span>
         </InfoCard>
       </div>
+
+      {canManage && (
+        <section className="mt-6 rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">GitHub two-way sync</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                When enabled, GitHub push webhooks update ADR content, send published changes to
+                review, and archive ADRs removed from the configured branch.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              {project.github_sync_enabled && (
+                <button
+                  type="button"
+                  disabled={syncBusy}
+                  onClick={() => void toggleGitHubSync(true)}
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm hover:bg-accent disabled:opacity-50"
+                >
+                  Rotate secret
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={syncBusy}
+                onClick={() => void toggleGitHubSync(!project.github_sync_enabled)}
+                className="h-9 rounded-md border border-border bg-background px-3 text-sm hover:bg-accent disabled:opacity-50"
+              >
+                {syncBusy
+                  ? "Saving…"
+                  : project.github_sync_enabled
+                    ? "Disable sync"
+                    : "Enable sync"}
+              </button>
+            </div>
+          </div>
+          {project.github_sync_enabled && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Listening for pushes to <code>{project.branch || "main"}</code>. Incoming ADRs are
+              created in Under Review. GitHub API endpoints are not used; sync clones the selected
+              branch.
+            </p>
+          )}
+          {webhookSecret && (
+            <div className="mt-3 grid gap-2 rounded-md border border-border bg-background p-3 text-xs">
+              <p>
+                Add a GitHub webhook for <code>push</code> events, using content type{" "}
+                <code>application/json</code> and this URL:
+              </p>
+              <code className="break-all">
+                {window.location.origin}
+                {import.meta.env.BASE_URL}api/github-sync
+              </code>
+              <p>Paste this secret into GitHub now. It is shown only once.</p>
+              <code className="break-all">{webhookSecret}</code>
+              <p className="text-muted-foreground">
+                Rotate the secret to replace it. Disabling sync removes the stored secret.
+              </p>
+            </div>
+          )}
+        </section>
+      )}
 
       {canManage && (
         <section className="mt-6 rounded-lg border border-border bg-card p-4">
@@ -404,6 +486,11 @@ function ProjectDetail() {
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs text-muted-foreground">{a.full_id}</span>
                     <StatusBadge status={a.status} />
+                    {a.repository_deleted_at && (
+                      <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        Archived from repository
+                      </span>
+                    )}
                   </div>
                   <div className="mt-0.5 truncate font-medium">{a.title}</div>
                 </div>
