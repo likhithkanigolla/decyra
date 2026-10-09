@@ -33,7 +33,8 @@ export function RichEditor({ label, value, onChange, placeholder, hint, rows = 6
           height={rows * 30 + 60}
           preview="live"
           textareaProps={{
-            placeholder: placeholder
+            placeholder,
+            required,
           }}
           style={{ border: 'none', boxShadow: 'none' }}
         />

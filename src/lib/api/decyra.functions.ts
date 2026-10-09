@@ -21,6 +21,20 @@ async function pgOne<T = any>(sql: string, params?: any[]) {
   return queryOne<T>(sql, params);
 }
 
+function assertRequiredAdrContent(adr: {
+  title: string;
+  context: string;
+  decision: string;
+  consequences: string;
+}) {
+  const missing = ["title", "context", "decision", "consequences"].filter(
+    (field) => !adr[field as keyof typeof adr]?.trim()
+  );
+  if (missing.length) {
+    throw new Error(`Required ADR fields are missing: ${missing.join(", ")}`);
+  }
+}
+
 // ─── getMyContext ─────────────────────────────────────────────────────────────
 
 export const getMyContext = createServerFn({ method: "POST" })
@@ -781,11 +795,11 @@ export const createAdr = createServerFn({ method: "POST" })
     z
       .object({
         project_id: z.string().uuid(),
-        title: z.string().min(3).max(200),
+        title: z.string().trim().min(3).max(200),
         tags: z.array(z.string()).default([]),
-        context: z.string().default(""),
-        decision: z.string().default(""),
-        consequences: z.string().default(""),
+        context: z.string().trim().min(1),
+        decision: z.string().trim().min(1),
+        consequences: z.string().trim().min(1),
         alternatives: z.string().default(""),
         design_changes: z.object({
           api_changes: z.string().default(""),
@@ -812,6 +826,7 @@ export const createAdr = createServerFn({ method: "POST" })
       .parse(d)
   )
   .handler(async ({ context: rawCtx, data }) => {
+    assertRequiredAdrContent(data);
     const context = ctx(rawCtx);
     const { supabase, userId, isDatabaseLocal } = context;
 
@@ -1451,11 +1466,20 @@ export const updateAdr = createServerFn({ method: "POST" })
 
     if (isDatabaseLocal) {
       // Check project_member or admin
-      const adr = await pgOne<any>("SELECT status, project_id FROM adrs WHERE id = $1", [data.id]);
+      const adr = await pgOne<any>(
+        "SELECT status, project_id, title, context, decision, consequences FROM adrs WHERE id = $1",
+        [data.id]
+      );
       if (!adr) throw new Error("ADR not found");
       const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'", [userId]));
       const isProjectMember = !!(await pgOne("SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2", [userId, adr.project_id]));
       if (!isAdmin && !isProjectMember) throw new Error("Not authorized to edit this ADR");
+      assertRequiredAdrContent({
+        title: data.title ?? adr.title,
+        context: data.context ?? adr.context,
+        decision: data.decision ?? adr.decision,
+        consequences: data.consequences ?? adr.consequences,
+      });
 
       const fields: string[] = [];
       const vals: any[] = [];
@@ -1502,8 +1526,18 @@ export const updateAdr = createServerFn({ method: "POST" })
     if (data.major_impacts !== undefined) updates.major_impacts = data.major_impacts;
     if (data.references_data !== undefined) updates.references_data = data.references_data;
 
-    const { data: adrInfo, error: fetchErr } = await supabase.from("adrs").select("status").eq("id", data.id).single();
+    const { data: adrInfo, error: fetchErr } = await supabase
+      .from("adrs")
+      .select("status, title, context, decision, consequences")
+      .eq("id", data.id)
+      .single();
     if (fetchErr) throw new Error(fetchErr.message);
+    assertRequiredAdrContent({
+      title: data.title ?? adrInfo.title,
+      context: data.context ?? adrInfo.context,
+      decision: data.decision ?? adrInfo.decision,
+      consequences: data.consequences ?? adrInfo.consequences,
+    });
     if (adrInfo.status === "published" || adrInfo.status === "superseded") {
       updates.status = "draft";
     }

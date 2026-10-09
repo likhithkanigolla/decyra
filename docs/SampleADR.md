@@ -4,6 +4,8 @@
 **Date:** YYYY-MM-DD
 **Tags:** [comma, separated, tags]
 
+The title, Context, Decision, and Consequences sections are required when creating or updating an ADR. Other sections are optional.
+
 ## Context
 
 [Describe the context and problem statement here in plain text or simple markdown]
