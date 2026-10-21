@@ -66,6 +66,7 @@
     "dotenv": "^17.4.2",
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
+    "lru-cache": "^11.5.3",
     "lucide-react": "^0.575.0",
     "pg": "^8.11.3",
     "react": "^19.2.0",
