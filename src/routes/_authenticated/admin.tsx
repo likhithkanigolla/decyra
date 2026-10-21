@@ -13,7 +13,7 @@ export const Route = createFileRoute("/_authenticated/admin")({
 });
 
 const DEFAULT_CREATE = { email: "", password: "", full_name: "", username: "", role: "member" as "admin" | "member" };
-const DEFAULT_EDIT = { user_id: "", full_name: "", role: "member" as "admin" | "member" };
+const DEFAULT_EDIT = { user_id: "", full_name: "", username: "", role: "member" as "admin" | "member" };
 
 function Admin() {
   const profilesFn = useServerFn(listProfiles);
@@ -36,7 +36,7 @@ function Admin() {
   const [createForm, setCreateForm] = useState(DEFAULT_CREATE);
   const [createBusy, setCreateBusy] = useState(false);
 
-  const [editTarget, setEditTarget] = useState<null | { id: string; full_name: string; role: string; email: string }>(null);
+  const [editTarget, setEditTarget] = useState<null | { id: string; full_name: string; username?: string | null; role: string; email: string }>(null);
   const [editForm, setEditForm] = useState(DEFAULT_EDIT);
   const [editBusy, setEditBusy] = useState(false);
 
@@ -76,7 +76,14 @@ function Admin() {
     e.preventDefault();
     setEditBusy(true);
     try {
-      await updateUserFn({ data: { user_id: editForm.user_id, full_name: editForm.full_name, role: editForm.role as any } });
+      await updateUserFn({
+        data: {
+          user_id: editForm.user_id,
+          full_name: editForm.full_name,
+          username: editForm.username.trim() ? editForm.username.trim().toLowerCase() : null,
+          role: editForm.role as any,
+        },
+      });
       toast.success("User updated");
       setEditTarget(null);
       qc.invalidateQueries({ queryKey: ["profiles"] });
@@ -87,7 +94,12 @@ function Admin() {
 
   function openEdit(p: any) {
     setEditTarget(p);
-    setEditForm({ user_id: p.id, full_name: p.full_name ?? "", role: "member" });
+    setEditForm({
+      user_id: p.id,
+      full_name: p.full_name ?? "",
+      username: p.username ?? "",
+      role: (p.role === "admin" ? "admin" : "member") as "admin" | "member",
+    });
   }
 
   async function handleResetPassword(e: React.FormEvent) {
@@ -179,6 +191,16 @@ function Admin() {
                 <div>
                   <div className="text-sm font-medium flex items-center gap-2">
                     {p.full_name ?? "—"}
+                    {p.username && (
+                      <span className="text-xs font-normal text-muted-foreground font-mono">
+                        @{p.username}
+                      </span>
+                    )}
+                    {p.role === "admin" && (
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-primary tracking-wider">
+                        Admin
+                      </span>
+                    )}
                     {p.is_locked && <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-destructive tracking-widest">Locked</span>}
                   </div>
                   <div className="text-xs text-muted-foreground">{p.email}</div>
@@ -253,6 +275,12 @@ function Admin() {
             <Field label="Full name">
               <input required value={editForm.full_name}
                 onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
+            </Field>
+            <Field label="Username (optional)">
+              <input type="text" minLength={3} maxLength={30} value={editForm.username}
+                onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
+                placeholder="janesmith"
                 className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
             </Field>
             <Field label="Email (read-only)">
