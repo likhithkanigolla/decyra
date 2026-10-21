@@ -34,6 +34,9 @@ async function main() {
     const user = await createLocalUser(email, password, fullName, 'admin');
     console.log('✅ Admin user created successfully!');
     console.log(`   ID: ${user.id}`);
+    if (user.recoveryKey) {
+      console.log(`   🔑 Recovery Key saved to server: recovery-keys/${email.replace(/[^a-zA-Z0-9._-]/g, '_')}.recovery.key`);
+    }
     console.log(`\n🚀 You can now log in at http://localhost:3000/auth`);
     console.log(`   Email   : ${email}`);
     console.log(`   Password: (the one you set)`);
