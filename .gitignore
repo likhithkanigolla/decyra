@@ -34,3 +34,4 @@ recovery-keys/
 *.sln
 *.sw?
 .env
+.agents/rules/code-writing-rules.md
