@@ -232,7 +232,7 @@ export function parseAdrMarkdown(markdown: string) {
   return {
     title:
       titleMatch?.[1]
-        ?.replace(/^(?:\[[^\]]+\]\s*-\s*|\[[^\]]+\]\s*|[A-Z0-9-]+\s*-\s*)?ADR-\d+:\s*/i, "")
+        ?.replace(/^(?:\[[^\]]+\]\s*-\s*|\[[^\]]+\]\s*|[A-Z0-9_-]+\s*-\s*)?(?:ADR-)?\d+:\s*/i, "")
         ?.trim() ?? "",
     tags,
     context: extractMarkdownSection(content, "Context"),
