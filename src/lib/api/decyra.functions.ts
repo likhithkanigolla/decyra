@@ -1687,55 +1687,114 @@ export const generateDemoAdrFn = createServerFn({ method: "POST" })
       project_id: data.project_id,
       adr_number: 0,
       full_id: "PENDING",
-      title: "Adopt Event-Driven Architecture for User Notifications",
+      title: "Adopt Decyra as the Standard Architecture Decision Record Manager",
       status: "approved",
       author_id: userId,
-      tags: ["messaging", "kafka", "notifications"],
+      tags: [
+        "architecture",
+        "adr",
+        "decyra",
+        "documentation",
+        "developer-tools",
+        "governance",
+        "automation",
+      ],
+
       context:
-        "Currently, our notification system uses synchronous HTTP calls between microservices to trigger emails and push notifications. This tightly couples the services, leading to cascading failures when the notification service is down or slow, and makes it difficult to scale the core transaction services during peak load.\\n\\nWe need a way to decouple these services to improve overall system resilience and responsiveness.",
+        "As our engineering organization grows, architectural decisions become increasingly difficult to track, maintain, and discover across repositories and development teams. These decisions influence system architecture, technology selection, service boundaries, infrastructure, security, scalability, and long-term maintainability.\n\nCurrently, Architecture Decision Records (ADRs) are maintained primarily as Markdown files within individual repositories. Although this approach follows the documentation-as-code philosophy, it lacks a consistent mechanism for enforcing document structure, validating metadata, maintaining sequential numbering, and discovering decisions across projects.\n\nInconsistent templates, missing metadata, duplicate ADR numbers, and limited cross-repository discoverability make it difficult for developers to understand why a particular architectural choice was made. New team members may repeat previously rejected approaches, while reviewers must manually verify whether architectural decisions follow established documentation conventions.\n\nWe need a lightweight, developer-friendly solution that standardizes ADR creation and validation without introducing unnecessary infrastructure or separating architectural documentation from the software development lifecycle. The solution should integrate with existing Git workflows and CI/CD pipelines while allowing teams to retain ownership of their architectural decisions.\n\nDecyra has been identified as a potential solution for managing ADR workflows through structured documentation, validation, and developer tooling. Adopting Decyra will provide a consistent foundation for documenting, reviewing, and maintaining architectural decisions across engineering projects.",
+
       decision:
-        "We will adopt an **Event-Driven Architecture** using **Apache Kafka** as our central message broker for all user notifications.\\n\\nServices will publish `UserActionCompleted` events to a Kafka topic. The Notification Service will act as a consumer, picking up these events asynchronously and processing the required emails or push notifications.",
+        "We will adopt Decyra as the standard Architecture Decision Record (ADR) management tool for our engineering projects. Decyra will complement our existing Git-based documentation practices rather than replace them with a separate documentation platform.\n\nADRs will remain version-controlled alongside their associated codebases, preserving their history, review process, and relationship with architectural changes. Decyra will provide the tooling needed to standardize and validate ADR documents and support more consistent management of architectural knowledge.\n\nThe adoption will follow these principles:\n\n1. Standardized ADR Structure: Use a consistent ADR template covering context, decision, consequences, alternatives, and relevant technical impacts.\n2. Automated Validation: Validate ADR formatting, required metadata, numbering, and other configured conventions before changes are accepted.\n3. Developer Workflow Integration: Integrate ADR validation into pull requests and existing CI/CD pipelines.\n4. Version-Controlled Documentation: Store ADRs in the repository so that architectural decisions evolve alongside the code.\n5. Discoverability: Maintain a consistent organization of ADRs to make decisions easier to locate, review, and reference.\n6. Incremental Adoption: Introduce Decyra into selected repositories first, evaluate its effectiveness, and then expand adoption across the engineering organization.\n\nThe initial implementation will focus on ADR creation, structural validation, numbering conventions, and CI integration. Cross-repository indexing, advanced reporting, and additional automation may be introduced in subsequent iterations based on actual requirements.",
+
       consequences:
-        "### Positive\\n- **Decoupling**: Core services no longer depend on the uptime of the Notification Service.\\n- **Resilience**: Spikes in traffic won't crash the notification pipeline, as messages will queue up safely.\\n\\n### Negative\\n- **Complexity**: Introduces a new piece of infrastructure (Kafka) that we must maintain and monitor.\\n- **Eventual Consistency**: Users might experience a slight delay in receiving emails compared to synchronous calls.",
+        "### Positive\n\n- **Standardization:** Teams follow a common ADR structure and consistent metadata conventions, improving the quality and readability of architectural documentation.\n- **Improved Discoverability:** Developers can locate existing decisions more easily and understand the rationale behind architectural choices.\n- **Automated Quality Checks:** Validation catches missing fields, malformed documents, and numbering inconsistencies before they become persistent documentation problems.\n- **Better Code Review:** Reviewers can focus on the technical merits of architectural decisions rather than manually checking basic formatting conventions.\n- **Documentation as Code:** ADRs remain version-controlled and can be reviewed alongside the code changes or design proposals they describe.\n- **Reduced Duplication:** Teams can consult existing decisions before introducing new technologies, patterns, or architectural approaches.\n- **Improved Onboarding:** New developers gain access to documented architectural context and the reasoning behind existing system designs.\n- **Maintainability:** A standardized process makes it easier to update, supersede, and preserve the history of architectural decisions.\n\n### Negative / Trade-offs\n\n- **Learning Curve:** Developers must learn the Decyra workflow, supported commands, document conventions, and validation requirements.\n- **Initial Integration Effort:** Existing repositories may require ADR restructuring, metadata corrections, and CI/CD configuration changes.\n- **Tooling Dependency:** The organization will depend on Decyra's continued compatibility with its development workflows and repository structure.\n- **Validation Overhead:** Strict validation rules may initially cause pull request failures until existing documents and authoring practices are aligned with the standard.\n- **Maintenance Responsibility:** The engineering team must review tool updates, maintain integration configurations, and resolve compatibility issues.\n- **Adoption Consistency:** The benefits depend on teams actually documenting significant architectural decisions rather than treating ADR creation as an optional administrative task.\n\n### Neutral Consequences\n\n- **Workflow Changes:** ADR creation and validation become explicit parts of the development process for changes that require architectural documentation.\n- **Repository Organization:** Teams may need to establish or standardize an ADR directory and naming conventions.\n- **Governance:** Engineering leadership must define which decisions require an ADR and who is responsible for reviewing and approving them.",
+
       alternatives:
-        "- **RabbitMQ**: Evaluated but rejected because we anticipate very high throughput and want to leverage Kafka's replayability feature for auditing.\\n- **Redis Pub/Sub**: Rejected because messages are not persistent, and we cannot risk losing notifications if the consumer crashes.",
+        "### 1. Continue Using Ad-Hoc Markdown Files\n\n**Description:** Continue creating and maintaining ADRs manually within individual repositories.\n\n**Advantages:** No additional tooling or installation requirements; maximum flexibility; familiar workflow for developers.\n\n**Disadvantages:** Formatting and metadata can become inconsistent, numbering errors require manual correction, and cross-repository discovery remains difficult. Manual checks also become increasingly expensive as the number of repositories grows.\n\n**Reason for Rejection:** This approach does not sufficiently address the need for standardized ADR governance and automated validation.\n\n### 2. Develop a Custom Internal ADR Management Tool\n\n**Description:** Build and maintain an organization-specific tool for creating, validating, indexing, and managing ADRs.\n\n**Advantages:** Complete control over features, integration points, user experience, and organizational policies.\n\n**Disadvantages:** Requires ongoing engineering effort for development, testing, maintenance, documentation, and compatibility with evolving repository workflows. It also creates an additional internal system that must be supported.\n\n**Reason for Rejection:** Building a custom solution would introduce avoidable development and maintenance costs when an existing tool can serve as the starting point.\n\n### 3. Use an Enterprise Wiki or Confluence\n\n**Description:** Store architectural decisions in a centralized documentation platform.\n\n**Advantages:** Provides collaborative editing, search, access management, and centralized documentation.\n\n**Disadvantages:** Architectural decisions can become disconnected from source code, pull requests, and repository history. Teams may also need to maintain separate copies of related documentation.\n\n**Reason for Rejection:** A separate documentation platform does not align as closely with our preference for version-controlled, documentation-as-code workflows.\n\n### 4. Use Generic Markdown Linting and Custom CI Scripts\n\n**Description:** Combine Markdown linters, repository scripts, and CI checks to enforce selected ADR conventions.\n\n**Advantages:** Uses familiar tooling, allows incremental adoption, and provides flexibility in implementing validation rules.\n\n**Disadvantages:** ADR-specific rules must be implemented and maintained separately. Numbering, metadata validation, and future workflow requirements may require additional custom logic.\n\n**Reason for Rejection:** Although technically feasible, this approach would require assembling and maintaining functionality that a dedicated ADR management tool is intended to provide.\n\n### 5. Adopt Decyra\n\n**Description:** Use Decyra to establish consistent ADR authoring and validation practices while retaining Git as the source of truth.\n\n**Advantages:** Aligns with documentation-as-code practices, provides a foundation for standardized validation, and can be integrated into existing development workflows.\n\n**Disadvantages:** Requires initial integration, developer onboarding, and continued maintenance of the tool and its configurations.\n\n**Reason for Selection:** Decyra provides a focused approach to ADR management without requiring the organization to build a complete internal solution or migrate architectural documentation to a separate platform.",
+
       design_changes: {
         api_changes:
-          "Removed `POST /internal/notifications` endpoint from the Notification Service.",
+          "No production application APIs need to change solely to adopt Decyra. The initial implementation will focus on its command-line interface and repository-level integration. Any future APIs introduced for centralized ADR indexing or external integrations will be evaluated separately.",
+
         workflow_changes:
-          "Checkout workflow no longer waits for email confirmation before returning `200 OK` to the user.",
-        service_changes: "Added Kafka Producer library to `BillingService` and `AuthService`.",
-        infrastructure_changes: "Provisioned a managed Confluent Kafka cluster.",
-        data_model_changes: "",
+          "Introduce an explicit ADR authoring and validation workflow. Developers will create or update ADRs using the standardized template, run local validation, and submit the changes through the existing pull request process. CI pipelines will validate relevant ADR changes before merging. Significant architectural changes should reference the associated ADR in the pull request where appropriate.",
+
+        service_changes:
+          "No existing production microservices need to be modified for the initial adoption. Developer tooling and repository automation will be updated to invoke Decyra. Any future integrations with project management systems, code review tools, or centralized documentation services will be introduced incrementally.",
+
+        infrastructure_changes:
+          "No additional production infrastructure is required for the initial CLI-based implementation. Decyra validation will run on developer machines and existing CI runners. If centralized indexing or a hosted service is introduced later, its deployment, availability, security, and maintenance requirements will be assessed separately.",
+
+        data_model_changes:
+          "Standardize the metadata associated with ADR documents, including identifiers, titles, status, dates, and other fields supported by the adopted template. Existing ADRs may need migration or metadata normalization. Git repositories remain the source of truth for ADR content and revision history.",
+
+        security_changes:
+          "Continue using existing repository permissions and CI access controls. Validation jobs should require only the repository access necessary to inspect and validate ADR files. Credentials must not be embedded in ADR content or committed to version control.",
+
+        repository_changes:
+          "Establish a consistent ADR directory structure and naming convention across participating repositories. Add the Decyra configuration and validation workflow where required, and document how teams should create, review, approve, and supersede ADRs.",
+
+        governance_changes:
+          "Define ownership of ADR templates, validation rules, and repository-level integration. Establish guidelines for which architectural decisions require records, how ADRs transition between proposed and accepted states, and how superseded decisions are linked to their replacements.",
       },
+
       major_impacts: {
-        operational: "Need to add Datadog alerts for Kafka consumer lag.",
-        testing: "End-to-end tests must be updated to poll for asynchronous email delivery.",
-        security: "Need to configure mTLS for Kafka clients.",
+        operational:
+          "The engineering platform team will own the shared Decyra integration guidance and troubleshooting documentation. CI failures caused by invalid ADR documents will be reported through the existing pull request checks. A lightweight runbook will cover common validation failures, configuration issues, and tool-version incompatibilities.",
+
+        testing:
+          "Validate Decyra against representative ADR documents, including valid records, missing required metadata, malformed content, inconsistent numbering, and other supported validation scenarios. Test CI integration to confirm that invalid ADR changes are reported clearly and that unrelated code changes are not unnecessarily blocked. Existing ADRs should be checked before enforcement is enabled.",
+
+        security:
+          "The initial implementation processes documentation within developer environments and trusted CI runners. Existing Git access controls will govern who can modify ADRs. CI workflows should use pinned or otherwise controlled tool versions where practical, follow dependency-management policies, and avoid exposing repository credentials to unnecessary steps. Security-sensitive information must not be recorded in ADRs unless approved for that repository.",
+
         documentation:
-          "Update the Developer Guide with instructions on how to produce and consume events locally using Docker Compose.",
+          "Update the root CONTRIBUTING.md files, developer onboarding guides, and engineering documentation to explain the ADR workflow. Create a dedicated ADR process guide describing when to create an ADR, how to use the standard template, how to run Decyra validation, how to interpret validation errors, and how to supersede an existing decision.",
+
         scalability:
-          "The notification service can now be scaled horizontally based on the size of the Kafka consumer group.",
+          "The repository-based approach scales across additional projects by reusing templates and CI workflow conventions. Validation remains a lightweight documentation-processing task. If the number of repositories or ADRs grows substantially, centralized indexing and cross-repository search can be evaluated as separate capabilities.",
+
+        developer_experience:
+          "Developers gain a consistent process for recording architectural decisions, while automated checks reduce the need for manual formatting reviews. Clear validation errors and onboarding guidance will be important to prevent the process from becoming an unnecessary obstacle to routine development.",
+
+        maintainability:
+          "The engineering platform team will periodically review Decyra versions, template conventions, and CI integrations. Changes to shared validation rules should be documented and tested before being propagated across repositories.",
+
+        compliance:
+          "Consistent ADR records improve the ability to review architectural rationale and trace decisions over time. Decyra does not, by itself, guarantee regulatory compliance or replace any organization-specific audit, approval, or retention requirements.",
+
+        adoption:
+          "Adoption will begin with a small number of representative repositories. Feedback from developers and reviewers will inform improvements to templates and validation rules before the workflow is extended more broadly.",
       },
+
       references_data: {
         pull_requests: [],
         git_commits: [],
-        design_docs: ["https://wiki.example.com/architecture/event-driven"],
+        design_docs: [
+          "[ADR 0001: Adoption of Decyra as Architecture Decision Record Manager](https://github.com/likhithkanigolla/decyra/)",
+          "[Decyra Repository](https://github.com/likhithkanigolla/decyra/)",
+        ],
         wiki_pages: [],
-        external: ["https://kafka.apache.org/documentation/"],
+        external: [
+          "[Documenting Architecture Decisions - Michael Nygard](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions)",
+          "[GitHub Actions Documentation](https://docs.github.com/en/actions)",
+          "[GitLab CI/CD Documentation](https://docs.gitlab.com/ee/ci/)",
+        ],
       },
     };
 
     if (isDatabaseLocal) {
       const inserted = await pgOne<{ id: string }>(
         `INSERT INTO public.adrs (
-           project_id, title, status, author_id, tags,
+           project_id, adr_number, full_id, title, status, author_id, tags,
            context, decision, consequences, alternatives,
            design_changes, major_impacts, references_data
-         ) VALUES ($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb)
-         RETURNING id`,
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14::jsonb)
+         RETURNING *`,
         [
           demoAdr.project_id,
+          demoAdr.adr_number,
+          demoAdr.full_id,
           demoAdr.title,
           demoAdr.status,
           demoAdr.author_id,
