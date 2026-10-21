@@ -1450,6 +1450,61 @@ export const signUpLocalFn = createServerFn({ method: "POST" })
     // Explicitly grant admin role to the first user
     return signUpLocal(data.email, data.password, data.fullName, "admin", data.username);
   });
+
+// ─── generateRecoveryKeyFn ─────────────────────────────────────────────────────
+
+export const generateRecoveryKeyFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => z.object({ identifier: z.string().min(1) }).parse(d))
+  .handler(async ({ data }) => {
+    const dbConfig = getDatabaseConfig();
+    if (!dbConfig.isLocal) {
+      throw new Error("Recovery key generation is only available in local PostgreSQL mode.");
+    }
+    const { queryOne } = await import("@/integrations/database/postgres");
+    const user = await queryOne<{ id: string; email: string }>(
+      "SELECT id, email FROM public.local_users WHERE email = $1 OR username = $1",
+      [data.identifier.toLowerCase().trim()],
+    );
+    if (!user) {
+      throw new Error("No user found with the provided email or username.");
+    }
+
+    const { generateAndSaveRecoveryKey } = await import(
+      "@/integrations/database/local-auth.server"
+    );
+    await generateAndSaveRecoveryKey(user.id, user.email);
+
+    const sanitizedEmail = user.email.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return {
+      success: true,
+      email: user.email,
+      filePath: `recovery-keys/${sanitizedEmail}.recovery.key`,
+    };
+  });
+
+// ─── resetPasswordWithRecoveryKeyFn ────────────────────────────────────────────
+
+export const resetPasswordWithRecoveryKeyFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) =>
+    z
+      .object({
+        identifier: z.string().min(1),
+        recoveryKey: z.string().min(1),
+        newPassword: z.string().min(8),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const dbConfig = getDatabaseConfig();
+    if (!dbConfig.isLocal) {
+      throw new Error("Recovery key reset is only available in local PostgreSQL mode.");
+    }
+    const { resetPasswordWithRecoveryKey } = await import(
+      "@/integrations/database/local-auth.server"
+    );
+    return resetPasswordWithRecoveryKey(data.identifier, data.recoveryKey, data.newPassword);
+  });
+
 // ─── addProjectMember ─────────────────────────────────────────────────────────
 
 export const addProjectMember = createServerFn({ method: "POST" })

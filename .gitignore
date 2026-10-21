@@ -20,6 +20,8 @@ coverage
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars
+recovery-keys/
+*.recovery.key
 
 # Editor directories and files
 .vscode/*

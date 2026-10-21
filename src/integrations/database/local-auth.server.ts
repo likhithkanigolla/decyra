@@ -85,6 +85,7 @@ export interface LocalUser {
   username?: string | null;
   full_name: string | null;
   role: string;
+  recoveryKey?: string;
 }
 
 // ─── Auth Operations ─────────────────────────────────────────────────────────
@@ -193,7 +194,105 @@ export async function createLocalUser(
 
     await query('COMMIT');
 
-    return { id: userId, email: existingEmail, username: existingUser, full_name: fullName, role };
+    // Automatically generate and save recovery key for the new user
+    const recoveryKey = await generateAndSaveRecoveryKey(userId, existingEmail);
+
+    return { id: userId, email: existingEmail, username: existingUser, full_name: fullName, role, recoveryKey };
+  } catch (err) {
+    await query('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Generates a high-entropy recovery key, hashes and stores it in local_users,
+ * and writes/appends it securely to recovery-keys/ directory on the server file system.
+ */
+export async function generateAndSaveRecoveryKey(userId: string, email: string): Promise<string> {
+  const fs = await import('fs');
+  const path = await import('path');
+
+  // Format: rec_ + 32 hex chars (128-bit entropy)
+  const recoveryKey = `rec_${randomBytes(16).toString('hex')}`;
+  const keyHash = await hashPassword(recoveryKey);
+
+  await query(
+    'UPDATE public.local_users SET recovery_key_hash = $1 WHERE id = $2',
+    [keyHash, userId]
+  );
+
+  const keysDir = path.resolve(process.cwd(), 'recovery-keys');
+  if (!fs.existsSync(keysDir)) {
+    fs.mkdirSync(keysDir, { recursive: true, mode: 0o700 });
+  }
+
+  const sanitizedEmail = email.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const keyFilePath = path.join(keysDir, `${sanitizedEmail}.recovery.key`);
+
+  const keyFileContent = [
+    `# ============================================================`,
+    `# Decyra Account Recovery Key`,
+    `# User: ${email}`,
+    `# Generated At: ${new Date().toISOString()}`,
+    `# NOTE: Keep this file secure. Anyone with server access can`,
+    `# read this key to reset the password for this account.`,
+    `# ============================================================`,
+    ``,
+    `RECOVERY_KEY=${recoveryKey}`,
+    ``,
+  ].join('\n');
+
+  fs.writeFileSync(keyFilePath, keyFileContent, { encoding: 'utf8', mode: 0o600 });
+
+  return recoveryKey;
+}
+
+/**
+ * Reset user password using the server-saved recovery key.
+ */
+export async function resetPasswordWithRecoveryKey(
+  identifier: string,
+  recoveryKey: string,
+  newPassword: string
+): Promise<{ success: boolean; message: string }> {
+  const user = await queryOne<{ id: string; email: string; recovery_key_hash: string | null }>(
+    `SELECT id, email, recovery_key_hash FROM public.local_users 
+     WHERE email = $1 OR username = $1`,
+    [identifier.toLowerCase().trim()]
+  );
+
+  if (!user || !user.recovery_key_hash) {
+    throw new Error('Invalid account or no recovery key has been configured.');
+  }
+
+  const validKey = await verifyPassword(recoveryKey.trim(), user.recovery_key_hash);
+  if (!validKey) {
+    throw new Error('Invalid recovery key. Please check the file on your server.');
+  }
+
+  const newPasswordHash = await hashPassword(newPassword);
+
+  await query('BEGIN');
+  try {
+    await query(
+      'UPDATE auth.users SET encrypted_password = $1 WHERE email = $2',
+      [newPasswordHash, user.email]
+    );
+
+    await query(
+      'UPDATE public.local_users SET password_hash = $1 WHERE id = $2',
+      [newPasswordHash, user.id]
+    );
+
+    // Rotate recovery key upon use for safety and rewrite the file
+    const newRecoveryKey = await generateAndSaveRecoveryKey(user.id, user.email);
+
+    await query('COMMIT');
+
+    return {
+      success: true,
+      message: `Password reset successfully! A new recovery key was saved to your server for ${user.email}.`,
+    };
   } catch (err) {
     await query('ROLLBACK');
     throw err;

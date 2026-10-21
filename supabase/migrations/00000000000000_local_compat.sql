@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS public.local_users (
   full_name TEXT,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'member', -- 'admin' | 'member'
+  recovery_key_hash TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
