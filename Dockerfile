@@ -3,6 +3,9 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
+# Install git and build essentials if needed
+RUN apk add --no-cache git
+
 # Install dependencies using npm
 COPY package.json package-lock.json ./
 RUN npm install
@@ -22,6 +25,9 @@ RUN npm run build && \
 FROM node:22-alpine AS runner
 
 WORKDIR /app
+
+# Install git and certificates required for git clone/push operations
+RUN apk add --no-cache git openssh-client ca-certificates
 
 # Install ONLY production dependencies for a lightweight image
 COPY package.json package-lock.json ./
