@@ -1265,14 +1265,32 @@ export const listProfiles = createServerFn({ method: "POST" })
       const result = await pgQuery<{
         id: string;
         email: string;
+        username: string | null;
         full_name: string;
         is_locked: boolean;
-      }>("SELECT id, email, full_name, is_locked FROM profiles ORDER BY full_name");
+        role: "admin" | "member";
+      }>(`
+        SELECT p.id, p.email, p.username, p.full_name, p.is_locked,
+               COALESCE((SELECT ur.role FROM user_roles ur WHERE ur.user_id = p.id AND ur.role = 'admin' LIMIT 1), 'member') as role
+        FROM profiles p
+        ORDER BY p.full_name
+      `);
       return result.rows;
     }
 
-    const { data } = await supabase.from("profiles").select("id, email, full_name, is_locked");
-    return data ?? [];
+    const [{ data: profilesData }, { data: rolesData }] = await Promise.all([
+      supabase.from("profiles").select("id, email, username, full_name, is_locked"),
+      supabase.from("user_roles").select("user_id, role"),
+    ]);
+
+    const adminUserIds = new Set(
+      (rolesData ?? []).filter((r: any) => r.role === "admin").map((r: any) => r.user_id)
+    );
+
+    return (profilesData ?? []).map((p: any) => ({
+      ...p,
+      role: adminUserIds.has(p.id) ? ("admin" as const) : ("member" as const),
+    }));
   });
 
 // ─── createUser (NEW — fixes Issue 3) ────────────────────────────────────────
@@ -2382,7 +2400,7 @@ export const dashboardStats = createServerFn({ method: "POST" })
     return { recent: adrs ?? [], counts, projectsCount: (projects ?? []).length };
   });
 
-// ─── updateUser (admin: edit role / name) ─────────────────────────────────────
+// ─── updateUser (admin: edit role / name / username) ──────────────────────────
 
 export const updateUser = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
@@ -2391,6 +2409,14 @@ export const updateUser = createServerFn({ method: "POST" })
       .object({
         user_id: z.string().uuid(),
         full_name: z.string().min(1).max(200).optional(),
+        username: z
+          .string()
+          .trim()
+          .min(3)
+          .max(30)
+          .regex(/^[a-zA-Z0-9._-]+$/)
+          .nullable()
+          .optional(),
         role: z.enum(["admin", "member"]).optional(),
       })
       .parse(d),
@@ -2399,12 +2425,32 @@ export const updateUser = createServerFn({ method: "POST" })
     const context = ctx(rawCtx);
     const { supabase, userId, isDatabaseLocal } = context;
 
+    const normalizedUsername =
+      data.username === undefined
+        ? undefined
+        : data.username
+          ? data.username.toLowerCase().trim()
+          : null;
+
     if (isDatabaseLocal) {
       const isAdmin = !!(await pgOne(
         "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
         [userId],
       ));
       if (!isAdmin) throw new Error("Only platform admins can edit users.");
+
+      if (normalizedUsername) {
+        const existing = await pgOne(
+          `SELECT 1 FROM profiles WHERE lower(username) = $1 AND id <> $2
+           UNION ALL
+           SELECT 1 FROM local_users WHERE lower(username) = $1 AND id <> $2
+           LIMIT 1`,
+          [normalizedUsername, data.user_id],
+        );
+        if (existing) {
+          throw new Error("Username is already taken.");
+        }
+      }
 
       if (data.full_name) {
         await pgQuery("UPDATE profiles SET full_name = $1 WHERE id = $2", [
@@ -2413,6 +2459,16 @@ export const updateUser = createServerFn({ method: "POST" })
         ]);
         await pgQuery("UPDATE local_users SET full_name = $1 WHERE id = $2", [
           data.full_name,
+          data.user_id,
+        ]);
+      }
+      if (normalizedUsername !== undefined) {
+        await pgQuery("UPDATE profiles SET username = $1 WHERE id = $2", [
+          normalizedUsername,
+          data.user_id,
+        ]);
+        await pgQuery("UPDATE local_users SET username = $1 WHERE id = $2", [
+          normalizedUsername,
           data.user_id,
         ]);
       }
@@ -2434,8 +2490,17 @@ export const updateUser = createServerFn({ method: "POST" })
     if (!(roles ?? []).some((r: any) => r.role === "admin")) {
       throw new Error("Only platform admins can edit users.");
     }
-    if (data.full_name) {
-      await supabase.from("profiles").update({ full_name: data.full_name }).eq("id", data.user_id);
+
+    const updates: Record<string, any> = {};
+    if (data.full_name) updates.full_name = data.full_name;
+    if (normalizedUsername !== undefined) updates.username = normalizedUsername;
+
+    if (Object.keys(updates).length > 0) {
+      const { error } = await supabase.from("profiles").update(updates).eq("id", data.user_id);
+      if (error) {
+        if (error.code === "23505") throw new Error("Username is already taken.");
+        throw new Error(error.message);
+      }
     }
     if (data.role) {
       const { supabaseAdmin } = await import("@/integrations/supabase/client.server");

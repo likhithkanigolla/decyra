@@ -16,5 +16,17 @@ CREATE TABLE IF NOT EXISTS public.github_sync_secrets (
 );
 
 ALTER TABLE public.github_sync_secrets ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON public.github_sync_secrets FROM anon, authenticated;
-GRANT ALL ON public.github_sync_secrets TO service_role;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON public.github_sync_secrets FROM anon;
+  END IF;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE ALL ON public.github_sync_secrets FROM authenticated;
+  END IF;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'service_role') THEN
+    GRANT ALL ON public.github_sync_secrets TO service_role;
+  END IF;
+END
+$$;
