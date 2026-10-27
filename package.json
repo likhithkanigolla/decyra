@@ -15,7 +15,7 @@
     "db:setup": "bash scripts/setup-postgres.sh",
     "db:stop": "bash scripts/stop-postgres.sh",
     "db:reset": "docker-compose down -v && bash scripts/setup-postgres.sh",
-    "db:migrate": "node --loader tsx/esm src/integrations/database/migrate.ts",
+    "db:migrate": "npx tsx src/integrations/database/migrate.ts",
     "create-admin": "npx tsx scripts/create-admin.ts",
     "reset-password": "npx tsx scripts/reset-password.ts",
     "seed": "npx tsx scripts/seed.ts",

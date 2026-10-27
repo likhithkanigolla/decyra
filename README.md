@@ -1,52 +1,71 @@
 # Architecture Hub (Decyra)
 
-Architecture Hub (internally referred to as Decyra) is a modern, collaborative platform for creating, tracking, and managing **Architecture Decision Records (ADRs)** across multiple projects. Built on top of a cutting-edge React tech stack, it provides organizations with the ability to codify their architectural decisions, visualize relationships between them, and ensure decisions are properly reviewed and approved.
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
+[![Platform](https://img.shields.io/badge/platform-TanStack_Start-blue.svg)]()
+[![Database](https://img.shields.io/badge/database-PostgreSQL_18-336791.svg)]()
 
-## 🚀 Features
+**Architecture Hub (Decyra)** is an open-source, collaborative engineering platform designed for creating, reviewing, visualizing, and governing **Architecture Decision Records (ADRs)** across multiple projects and repositories.
 
-- **Robust ADR Editor**: Create rich Architecture Decision Records with full Markdown support via a split-pane editor. Document Context, Decisions, Consequences, Alternatives, Design Changes, and Major Impacts.
-- **Project Workspaces**: Group ADRs by project. Restrict visibility and editing rights to assigned project members.
-- **Workflow & Approvals**: Transition ADRs through robust states (`Draft` -> `Under Review` -> `Approved` -> `Published`). Request mandatory reviews and track who approved or requested changes.
-- **Versioning**: Editing published ADRs automatically bumps them back into a draft state, while safely archiving the previously published Markdown in the version history.
-- **Repository Import & Migration**: Import existing ADR Markdown from a source Git repository into a project, then review and publish it to the project's configured destination repository.
-- **Project Data Archives**: Export visible ADR content and relationships as versioned JSON, or import an archive into another project. Imported records are drafts; approvals, comments, and published-version history are not included.
-- **Relationship Graph**: Visually track dependencies across ADRs (e.g., `depends_on`, `supersedes`, `conflicts_with`) using an interactive, auto-layout React Flow graph. Supports cross-project dependencies.
-- **Duplicate Detection**: Smart keyword extraction actively warns you if a similar ADR already exists across your organization while you are typing, preventing duplicated engineering efforts.
-- **Self-Hosted PostgreSQL**: Run the application via native PostgreSQL and Docker.
-- **Onboarding Experience**: First-time setup creates the initial administrator, and empty projects allow you to instantly generate Demo ADRs to learn the system.
+Built on TanStack Start (React SSR), PostgreSQL, and Git, Decyra empowers engineering organizations to codify architectural decisions, map dependencies, enforce strict approval workflows, and maintain synchronization with Git repositories.
 
-Project archives are intended for moving ADR content between projects and application instances, not as full database backups. Use PostgreSQL backup and restore procedures when a complete recovery of users, approvals, comments, and version history is required.
+> 📖 **Looking for the complete user guide?** Read the [Decyra Comprehensive User Manual](docs/USER_MANUAL.md).
+
+---
+
+## 🚀 Key Features
+
+- **Split-Pane ADR Editor**: Rich Markdown editor with live preview, syntax highlighting, and standard ADR sections (Context, Decision, Consequences, Alternatives, Design Changes, Impacts, and References).
+- **Flexible Authentication**: Sign in using **either your Email address or Username** + password.
+- **Project Governance & Isolation**: Group architectural decisions by project domain. Control visibility and editing rights through role-based access control.
+- **Strict Review State Machine**: Transition ADRs through formal stages:
+  $$\text{Draft} \longrightarrow \text{Under Review} \longrightarrow \text{Approved} \longrightarrow \text{Published}$$
+- **Multi-Approval Thresholds**: Configure the required number of approvals per project. Reviewers can formally **Approve** or **Request Changes**.
+- **Project Deletion Protection (3 Approvals & Revocation)**: Prevents accidental or unauthorized project deletion by requiring **at least 3 separate approvals** from platform admins or project engineers, with full support for revoking approvals at any time.
+- **Git Repository Integration**:
+  - Automatically commits and pushes published ADRs to your Git branch.
+  - Supports repository root (`/`) or custom subfolders (e.g. `docs/adr`).
+  - **Mandatory Git Token validation** and **automated repository migration** when changing repository URLs, branches, or folders.
+- **Repository ADR Import**: Import existing Markdown ADRs from any Git repository. Decyra validates and filters ADRs using the standard `[Project code-ADR-XXX]` format, automatically extracts clean titles, and preserves sequential numbering.
+- **GitHub Two-Way Push Sync**: Configure push webhooks to automatically sync Markdown updates from GitHub directly into Decyra drafts.
+- **Interactive Decision Graph**: Visual dependency mapping (`depends_on`, `supersedes`, `conflicts_with`, `related_to`) powered by React Flow with auto-layout and cross-project links.
+- **Real-Time Collaborative Editing**: Real-time collaborative drafting with live collaborator presence powered by Yjs.
+- **Duplicate Detection**: Real-time keyword analysis warns authors if a similar decision already exists across the organization, preventing redundant engineering efforts.
+- **Data Archives**: Export and import self-contained JSON project archives for moving records between environments.
+
+---
 
 ## 🛠 Tech Stack
 
-- **Frontend Framework**: [TanStack Start](https://tanstack.com/start) (React + SSR)
-- **Routing**: [TanStack Router](https://tanstack.com/router/latest)
-- **State Management**: [TanStack Query](https://tanstack.com/query/latest)
+- **Framework**: [TanStack Start](https://tanstack.com/start) (Full-stack React with SSR)
+- **Routing**: [TanStack Router](https://tanstack.com/router)
+- **Data Fetching**: [TanStack Query](https://tanstack.com/query)
 - **Styling**: Tailwind CSS + Radix UI Primitives
 - **Graph Visualization**: [React Flow](https://reactflow.dev/)
-- **Database**: PostgreSQL 18 (via native `pg` client)
-- **Icons**: Lucide React
-- **Markdown Editor**: `@uiw/react-md-editor`
+- **Database**: PostgreSQL 18 (via native `pg` connection pool)
+- **Git Engine**: `simple-git`
+- **Markdown & Editor**: `@uiw/react-md-editor`, `micromark`, `unified`
+- **Testing**: Vitest
 
 ---
 
 ## 📦 Administrator Setup Guide
 
 ### Prerequisites
-- Node.js (v20+ recommended)
-- Docker & Docker Compose (for local PostgreSQL database)
+- **Node.js**: v20+ (v22+ recommended)
+- **Docker & Docker Compose**: For the local PostgreSQL container
+- **Git**: Installed and available in your environment path
 
-### Installation
+### Quickstart Installation
 
 1. **Clone the repository and install dependencies:**
    ```bash
-   git clone <repository-url>
-   cd architecture-hub
+   git clone https://github.com/likhithkanigolla/decyra.git
+   cd decyra
    npm install
    ```
 
-2. **Environment Variables:**
-   Create a `.env` file in the root directory.
+2. **Configure Environment Variables:**
+   Create a `.env` file in the root directory:
    ```env
    DATABASE_TYPE=postgres
    VITE_DATABASE_TYPE=postgres
@@ -54,98 +73,120 @@ Project archives are intended for moving ADR content between projects and applic
    DATABASE_URL=postgresql://postgres:postgres@localhost:5432/decyra
    ```
 
-3. **Database Setup:**
-   Run the setup script which will spin up a local PostgreSQL container and run the migrations:
+3. **Start Database & Run Migrations:**
+   Launch the local PostgreSQL container and automatically execute SQL schema migrations:
    ```bash
    npm run db:setup
    ```
-   
-   To tear down the database in the future:
-   ```bash
-   npm run db:stop
-   ```
+   *(To stop the database container later: `npm run db:stop`)*
 
-4. **Start the Development Server:**
+4. **Launch the Development Server:**
    ```bash
    npm run dev:local
    ```
-   The application will be available at `http://localhost:8080/decyra/`.
+   Open your browser to: **`http://localhost:8080/decyra/`**
 
-### Initial Platform Setup (First Run)
+### Initial Admin Setup (First Launch)
+When opening Decyra for the first time:
+1. Navigate to the sign-in screen.
+2. Because no users exist yet, Decyra displays the **Platform Setup** wizard.
+3. Enter your Name, Email, Username, and Password to create the root **Platform Administrator**.
+4. Log in with either your **email** or **username**.
 
-When you first launch the application, navigate to the Auth page. Since no admin exists yet, you will be prompted with the **Platform Setup** screen. 
-1. Enter your Name, Email, Username, and Password to create the root **Administrator** account.
-2. Once signed in, you can manage the entire workspace.
-
-### Password Management
-
-If a user forgets their password, administrators can reset passwords via the terminal or users can reset via their recovery key:
-
+### User & Password Management
+Administrators can reset user passwords directly via the terminal:
 ```bash
 npm run reset-password <email-or-username> <new-password>
 ```
 
 ---
 
-## 📖 User Manual
+## 📖 Quick User Guide
 
-Welcome to Architecture Hub! This section explains how to use the platform on a daily basis.
+> For detailed walkthroughs, consult the [Comprehensive User Manual](docs/USER_MANUAL.md).
 
-### 1. Creating Projects
-Projects are the top-level containers for your architectural decisions.
-- Navigate to the **Projects** tab.
-- Click **Create Project**. Provide a Name, a short Code (e.g., `CORE`), a Description, and the number of required approvals for ADRs in this project.
-- Once created, you can invite other users to the project via the **Members** tab on the Project Details page.
+### 1. Creating and Configuring a Project
+- Navigate to **Projects** $\rightarrow$ **New Project**.
+- Set **Name**, **Project Code** (e.g., `DEC` or `CORE`), **Description**, and **Required Approvals** (default: `3`).
+- Enter your Git Repository URL, Branch, and ADR Path (`/` for repository root, or a directory like `docs/adr`).
+- When editing an existing project, entering your **Git Token is mandatory**, and modifying repository details automatically migrates all existing ADRs to the new destination.
 
-### 2. Writing Architecture Decision Records (ADRs)
-An ADR is a document that captures an important architectural decision made along with its context and consequences.
-- Inside a Project, click **Create ADR**.
-- Fill in the **Title** and **Tags**.
-- Use the **Rich Markdown Editor** to draft your ADR. The editor features a live side-by-side preview.
-- **Pro Tip**: Use the `Import from Markdown` button or upload a `.md` file to quickly parse an existing ADR into the platform.
-- When finished drafting, click **Create Draft**.
+### 2. Project Deletion Safety (3 Approvals Required)
+- Permanent project deletion requires **at least 3 separate approvals** from platform admins or project engineers.
+- Team members can click **Approve Deletion** or **Revoke Approval**.
+- Once 3 approvals are recorded, an authorized admin can execute permanent deletion.
 
-*Don't want to start from scratch? Click **Generate Example ADR** on an empty project to see what a great ADR looks like!*
+### 3. Writing and Reviewing ADRs
+- Click **New ADR** in your project workspace.
+- Complete the required sections (**Context**, **Decision**, and **Consequences**).
+- When ready for team feedback, click **Submit for Review**.
+- Assigned project engineers review the proposal, discuss in the comment thread, and click **Approve** or **Request Changes**.
 
-### 3. The Review Workflow
-ADRs go through a strict state machine to ensure governance:
-1. **Draft**: The ADR is being actively written. It can be freely edited.
-2. **Under Review**: Once the draft is complete, click **Submit for review**. The ADR is locked, and project members must review it.
-   - Reviewers can leave comments in the Discussion tab.
-   - Reviewers must explicitly click **Approve** or **Reject (Request Changes)**.
-3. **Approved**: Once the required number of approvals is met, the ADR can be marked as Approved.
-4. **Published**: Project Administrators can click **Publish ADR**. This creates a permanent, read-only snapshot (`v1`) of the markdown.
-   - If a Published ADR needs to be updated later, clicking Edit will bump it back to a **Draft** and increment the target version (e.g., to `v2`).
+### 4. Publishing & Git Sync
+- Once approvals reach the required threshold, a Project Admin clicks **Publish ADR**.
+- Decyra compiles the ADR into a permanent Markdown snapshot (`v1`) and automatically commits it to your Git repository.
+- If changes are needed in the future, clicking **Edit** on a published ADR increments the revision target to `v2` and initiates a new review cycle.
 
-### 4. Linking ADRs & Graph View
-Decisions rarely happen in a vacuum. You can link ADRs together to form a dependency graph.
-- On any ADR page, look at the **Relationships** sidebar.
-- Select a relationship type (e.g., `Depends on`, `Supersedes`).
-- Search for another ADR and add the link.
-- To see the big picture, go to the Project page and click **View Graph**. You'll see an interactive node graph of how all decisions connect.
+### 5. Importing Existing ADRs from Git
+- Open your project and click **Import ADRs**.
+- Point to your repository branch and directory (use `/` for repo root).
+- Decyra verifies each file against the `[Project code-ADR-XXX]` format (e.g. `[DEC-ADR-001]`), preserves sequential IDs, cleans duplicate headings, and safely ignores non-ADR files like `README.md`.
 
-### 5. Global Search
-Looking for a specific decision across the entire organization?
-- Use the global **Search ADRs** page (`/search`).
-- Search by Title, Keyword, or Content.
-- Use the filters to narrow down by Status (e.g., only show Published decisions) or Tags.
+### 6. Mapping Relationships & Exploring the Graph
+- Link related decisions from the **Relationships** sidebar (`depends_on`, `supersedes`, `conflicts_with`).
+- Click **Graph** in the project header to view an interactive auto-layout network of all architecture decisions.
 
 ---
 
 ## 🔒 Security & Access Control
 
-Access control is strictly enforced:
-- **Platform Admins**: Have global access to view, assign, and manage all projects and ADRs across the organization.
-- **Project Admins**: Can manage project settings, invite members, and publish ADRs within their assigned projects.
-- **Engineers**: Can draft, comment on, and approve ADRs in their assigned projects.
-- **Interns / Read-Only**: Can view ADRs in their projects and participate in discussions, but cannot approve decisions.
+Access permissions are enforced on both the client UI and server function endpoints:
+
+| Role | Scope | Permissions |
+| :--- | :--- | :--- |
+| **Platform Admin** | Global | Full administrative access to all projects, user accounts, and system settings. Can delete projects once 3 approvals are met. |
+| **Project Admin** | Project | Manages project configuration, invites members, publishes ADRs, and manages project deletion. |
+| **Engineer** | Project | Can author ADR drafts, leave review comments, approve ADRs, and approve/revoke project deletion. |
+| **Intern** | Project | Can view project ADRs and participate in discussion threads, but cannot approve decisions or project deletion. |
 
 ---
 
-## 🗄 Project Structure (For Developers)
+## 🧪 Verification & Testing
 
-- `/src/components/decyra`: Reusable UI components specifically designed for the ADR experience (Markdown Editor, Forms, Status Badges).
-- `/src/lib/api`: TanStack server functions (`decyra.functions.ts`) handling all database interactions securely on the backend.
-- `/src/routes`: TanStack file-based routing tree managing all pages and layouts.
-- `/migrations`: SQL migration scripts containing the database schema, user roles, and triggers.
-- `/scripts`: Utility scripts for the local environment (e.g., `reset-password.ts`, `seed.ts`).
+Decyra includes an automated test suite verifying database services, Git operations, security rules, and markdown parsers:
+
+```bash
+# Run all unit and integration tests
+npm run test
+
+# Run linter
+npm run lint
+
+# Build production bundle
+npm run build
+```
+
+---
+
+## 📁 Repository Structure
+
+```
+├── docs/                        # Detailed guides and User Manual
+│   ├── USER_MANUAL.md           # Comprehensive platform user manual
+│   ├── DATABASE_SETUP.md        # Database configuration details
+│   └── SampleADR.md             # Standard ADR Markdown reference template
+├── migrations/                  # SQL schema migrations
+├── src/
+│   ├── components/decyra/       # ADR editors, graph viewers, status badges
+│   ├── integrations/database/   # PostgreSQL connection pool and auth middleware
+│   ├── lib/api/                 # TanStack server functions and Git sync engines
+│   └── routes/                  # TanStack Router file-based route hierarchy
+├── tests/                       # Vitest automated test suites
+└── scripts/                     # Administration utilities (password reset, setup)
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

@@ -14,7 +14,7 @@ const TOKEN_EXPIRY_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 // ─── Password Hashing ────────────────────────────────────────────────────────
 
-function hashPassword(password: string): Promise<string> {
+export function hashPassword(password: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const salt = randomBytes(16).toString('hex');
     pbkdf2(password, salt, 100_000, 64, 'sha256', (err, derivedKey) => {
@@ -24,7 +24,7 @@ function hashPassword(password: string): Promise<string> {
   });
 }
 
-function verifyPassword(password: string, stored: string): Promise<boolean> {
+export function verifyPassword(password: string, stored: string): Promise<boolean> {
   return new Promise((resolve, reject) => {
     const [salt, hash] = stored.split(':');
     if (!salt || !hash) return resolve(false);
@@ -95,12 +95,27 @@ export async function loginLocal(
   identifier: string,
   password: string
 ): Promise<{ token: string; user: LocalUser }> {
-  const user = await queryOne<{ id: string; email: string; username: string | null; full_name: string | null; password_hash: string; role: string; is_locked: boolean }>(
-    `SELECT u.id, u.email, u.username, u.full_name, u.password_hash, u.role, p.is_locked 
+  const cleanId = identifier.trim().replace(/^@/, '').toLowerCase();
+  const user = await queryOne<{
+    id: string;
+    email: string;
+    username: string | null;
+    full_name: string | null;
+    password_hash: string;
+    role: string;
+    is_locked: boolean;
+  }>(
+    `SELECT u.id, u.email, 
+            COALESCE(u.username, p.username) AS username, 
+            COALESCE(u.full_name, p.full_name) AS full_name, 
+            u.password_hash, u.role, 
+            COALESCE(p.is_locked, false) AS is_locked 
      FROM public.local_users u 
      LEFT JOIN public.profiles p ON u.id = p.id 
-     WHERE u.email = $1 OR u.username = $1`,
-    [identifier.toLowerCase().trim()]
+     WHERE LOWER(u.email) = $1 
+        OR LOWER(COALESCE(u.username, '')) = $1 
+        OR LOWER(COALESCE(p.username, '')) = $1`,
+    [cleanId]
   );
 
   if (!user) throw new Error('Invalid email, username, or password');
@@ -112,8 +127,25 @@ export async function loginLocal(
   const valid = await verifyPassword(password, user.password_hash);
   if (!valid) throw new Error('Invalid email, username, or password');
 
+  // Keep local_users and profiles in sync with username
+  if (user.username) {
+    await query(
+      `UPDATE public.local_users SET username = $1 WHERE id = $2 AND username IS NULL`,
+      [user.username, user.id]
+    ).catch(() => {});
+  }
+
   const token = signJwt({ sub: user.id, email: user.email, role: user.role });
-  return { token, user: { id: user.id, email: user.email, username: user.username, full_name: user.full_name, role: user.role } };
+  return {
+    token,
+    user: {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      full_name: user.full_name,
+      role: user.role,
+    },
+  };
 }
 
 /**
@@ -143,11 +175,14 @@ export async function createLocalUser(
   username?: string
 ): Promise<LocalUser> {
   const existingEmail = email.toLowerCase().trim();
-  const existingUser = username ? username.toLowerCase().trim() : null;
+  const existingUser = username ? username.trim().replace(/^@/, '').toLowerCase() : null;
 
   const existing = await queryOne(
-    'SELECT id FROM public.local_users WHERE email = $1 OR (username IS NOT NULL AND username = $2)',
-    [existingEmail, existingUser]
+    `SELECT id FROM public.local_users WHERE LOWER(email) = $1 OR (username IS NOT NULL AND LOWER(username) = $2)
+     UNION
+     SELECT id FROM public.profiles WHERE LOWER(email) = $1 OR (username IS NOT NULL AND LOWER(username) = $2)
+     LIMIT 1`,
+    [existingEmail, existingUser ?? '']
   );
   if (existing) throw new Error('A user with that email or username already exists');
 
@@ -253,10 +288,15 @@ export async function resetPasswordWithRecoveryKey(
   recoveryKey: string,
   newPassword: string
 ): Promise<{ success: boolean; message: string }> {
+  const cleanId = identifier.trim().replace(/^@/, '').toLowerCase();
   const user = await queryOne<{ id: string; email: string; recovery_key_hash: string | null }>(
-    `SELECT id, email, recovery_key_hash FROM public.local_users 
-     WHERE email = $1 OR username = $1`,
-    [identifier.toLowerCase().trim()]
+    `SELECT u.id, u.email, u.recovery_key_hash 
+     FROM public.local_users u
+     LEFT JOIN public.profiles p ON u.id = p.id
+     WHERE LOWER(u.email) = $1 
+        OR LOWER(COALESCE(u.username, '')) = $1 
+        OR LOWER(COALESCE(p.username, '')) = $1`,
+    [cleanId]
   );
 
   if (!user || !user.recovery_key_hash) {

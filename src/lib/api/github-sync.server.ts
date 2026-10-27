@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { simpleGit } from "simple-git";
 import { z } from "zod";
 import { parseAdrMarkdown } from "@/lib/adr-markdown";
+import { normalizeRepositoryAdrPath } from "@/lib/api/git.server";
 
 interface GitHubSyncProject {
   id: string;
@@ -127,14 +128,19 @@ function safeBranch(project: GitHubSyncProject) {
 }
 
 function resolveAdrDirectory(repoDir: string, adrPath: string) {
-  const normalized = adrPath.trim().replaceAll("\\", "/");
-  if (path.posix.isAbsolute(normalized) || normalized.split("/").includes("..")) {
+  const normalized = normalizeRepositoryAdrPath(adrPath);
+  if (normalized.split("/").includes("..")) {
     throw new Error("The configured ADR path must stay inside the repository.");
   }
   const root = path.resolve(repoDir);
   const candidate = path.resolve(root, normalized || ".");
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
     throw new Error("The configured ADR path must stay inside the repository.");
+  }
+  if (!fs.existsSync(candidate)) {
+    throw new Error(
+      `The configured ADR path "${adrPath || "/"}" does not exist in the repository.`,
+    );
   }
   const realRoot = fs.realpathSync(root);
   const realCandidate = fs.realpathSync(candidate);
@@ -149,6 +155,7 @@ function collectMarkdownFiles(directory: string): string[] {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
       result.push(...collectMarkdownFiles(entryPath));
     } else if (entry.isFile() && /\.(md|markdown)$/i.test(entry.name)) {
       result.push(entryPath);
@@ -390,8 +397,20 @@ async function syncRepository(project: GitHubSyncProject, after: string) {
   const branch = safeBranch(project);
   const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "decyra-github-sync-"));
   try {
-    await simpleGit().clone(cloneUrl(project), tempDirectory, ["--branch", branch, "--depth", "1"]);
-    const repositoryGit = simpleGit(tempDirectory);
+    const git = simpleGit({
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    });
+    await git.clone(cloneUrl(project), tempDirectory, ["--branch", branch, "--depth", "1"]);
+    const repositoryGit = simpleGit({
+      baseDir: tempDirectory,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    });
     const head = (await repositoryGit.revparse(["HEAD"])).trim();
     if (head.toLowerCase() !== after.toLowerCase()) {
       return { synced: false, reason: "stale-push" as const };

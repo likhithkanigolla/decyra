@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { generateAdrMarkdown, parseAdrMarkdown } from "@/lib/adr-markdown";
+import {
+  generateAdrMarkdown,
+  parseAdrMarkdown,
+  extractAdrIdentifier,
+  inspectAdrIdentifier,
+} from "@/lib/adr-markdown";
 
 describe("adr-markdown", () => {
   const sampleAdr = {
@@ -40,12 +45,18 @@ describe("adr-markdown", () => {
     expect(md).toContain("# DEC-001: Use PostgreSQL for Local Mode");
     expect(md).toContain("**Status:** accepted");
     expect(md).toContain("**Tags:** database, postgres, architecture");
-    expect(md).toContain("## Context\n\nWe need an independent local setup without cloud dependencies.");
-    expect(md).toContain("## Decision\n\nRun local PostgreSQL via docker compose and custom adapter.");
+    expect(md).toContain(
+      "## Context\n\nWe need an independent local setup without cloud dependencies.",
+    );
+    expect(md).toContain(
+      "## Decision\n\nRun local PostgreSQL via docker compose and custom adapter.",
+    );
     expect(md).toContain("## Design Changes");
     expect(md).toContain("### API Changes\n\nAdded Postgres server functions.");
     expect(md).toContain("## Major Impacts");
-    expect(md).toContain("### Operational Impact\n\nZero external network dependency for local testing.");
+    expect(md).toContain(
+      "### Operational Impact\n\nZero external network dependency for local testing.",
+    );
     expect(md).toContain("## References");
     expect(md).toContain("- https://github.com/org/repo/pull/1");
   });
@@ -87,5 +98,133 @@ describe("adr-markdown", () => {
     expect(parsed.decision).toBe("");
     expect(parsed.design_changes.api_changes).toBe("");
     expect(parsed.references_data.pull_requests).toEqual([]);
+  });
+
+  describe("extractAdrIdentifier & bracketed title handling", () => {
+    it("extracts clean title when H1 has [ProjectCode-ADR-XXX] format", () => {
+      const parsed = parseAdrMarkdown(
+        "# [DEC-ADR-001]: Choose PostgreSQL Database\n\n## Context\nContext text\n\n## Decision\nDecision text\n\n## Consequences\nConsequences text",
+      );
+      expect(parsed.title).toBe("Choose PostgreSQL Database");
+    });
+
+    it("extracts ADR identifier when format is in H1 with brackets", () => {
+      const id = extractAdrIdentifier(
+        "0001.md",
+        "# [DEC-ADR-001]: Choose PostgreSQL Database\n\n## Context\nContext",
+        "DEC",
+      );
+      expect(id).toEqual({
+        projectCode: "DEC",
+        adrNumber: 1,
+        fullId: "DEC-ADR-001",
+        cleanTitle: "Choose PostgreSQL Database",
+      });
+    });
+
+    it("extracts ADR identifier when format is in H1 without brackets", () => {
+      const id = extractAdrIdentifier(
+        "0002.md",
+        "# DEC-ADR-002: Switch to React 19\n\n## Context\nContext",
+        "DEC",
+      );
+      expect(id).toEqual({
+        projectCode: "DEC",
+        adrNumber: 2,
+        fullId: "DEC-ADR-002",
+        cleanTitle: "Switch to React 19",
+      });
+    });
+
+    it("extracts ADR identifier when format is in filename with brackets", () => {
+      const id = extractAdrIdentifier(
+        "[DEC-ADR-003].md",
+        "# Setup Docker Environment\n\n## Context\nContext",
+        "DEC",
+      );
+      expect(id).toEqual({
+        projectCode: "DEC",
+        adrNumber: 3,
+        fullId: "DEC-ADR-003",
+        cleanTitle: "Setup Docker Environment",
+      });
+    });
+
+    it("extracts ADR identifier when format is in filename without brackets", () => {
+      const id = extractAdrIdentifier(
+        "dec-adr-004-redis-cache.md",
+        "# Setup Redis Cache\n\n## Context\nContext",
+        "DEC",
+      );
+      expect(id).toEqual({
+        projectCode: "DEC",
+        adrNumber: 4,
+        fullId: "DEC-ADR-004",
+        cleanTitle: "Setup Redis Cache",
+      });
+    });
+
+    it("rejects non-ADR files such as README.md", () => {
+      const id = extractAdrIdentifier(
+        "README.md",
+        "# My Project\n\n## Context\nSome readme content",
+        "DEC",
+      );
+      expect(id).toBeNull();
+    });
+
+    it("rejects ADR files belonging to another project code", () => {
+      const id = extractAdrIdentifier(
+        "0001.md",
+        "# [OTHER-ADR-001]: Another Project ADR\n\n## Context\nContext",
+        "DEC",
+      );
+      expect(id).toBeNull();
+    });
+
+    it("handles lowercase filenames and strips Title: prefix correctly", () => {
+      const id = extractAdrIdentifier(
+        "dm-adr-004.md",
+        "# DM-ADR-004: Title: Tenant Registration API Migration\n\n## Context\nContext",
+        "DM",
+      );
+      expect(id).toEqual({
+        projectCode: "DM",
+        adrNumber: 4,
+        fullId: "DM-ADR-004",
+        cleanTitle: "Tenant Registration API Migration",
+      });
+    });
+
+    it("prioritizes filename over stale body H1 and cleans title", () => {
+      const id = extractAdrIdentifier(
+        "dm-adr-003.md",
+        "# DM-ADR-001: Adopt Event-Driven Architecture\n\n## Context\nContext",
+        "DM",
+      );
+      expect(id).toEqual({
+        projectCode: "DM",
+        adrNumber: 3,
+        fullId: "DM-ADR-003",
+        cleanTitle: "Adopt Event-Driven Architecture",
+      });
+    });
+
+    it("provides human-readable reasons in inspectAdrIdentifier", () => {
+      const inspectFail1 = inspectAdrIdentifier("README.md", "# Documentation", "DM");
+      expect(inspectFail1.success).toBe(false);
+      if (!inspectFail1.success) {
+        expect(inspectFail1.reason).toContain("Not an ADR file");
+      }
+
+      const inspectFail2 = inspectAdrIdentifier("tad-adr-001.md", "# TAD-ADR-001: Migration", "DM");
+      expect(inspectFail2.success).toBe(false);
+      if (!inspectFail2.success) {
+        expect(inspectFail2.reason).toContain("does not match current project 'DM'");
+      }
+
+      const inspectSuccess = inspectAdrIdentifier("dm-adr-002.md", "# DM-ADR-002: Kafka", "DM");
+      expect(inspectSuccess.success).toBe(true);
+    });
   });
 });

@@ -21,12 +21,17 @@ async function main() {
     process.exit(1);
   }
 
-  const identifier = emailOrUsername.toLowerCase().trim();
+  const cleanId = emailOrUsername.trim().replace(/^@/, '').toLowerCase();
 
   try {
     const user = await queryOne<{ id: string, email: string }>(
-      'SELECT id, email FROM public.local_users WHERE email = $1 OR username = $1',
-      [identifier]
+      `SELECT u.id, u.email 
+       FROM public.local_users u
+       LEFT JOIN public.profiles p ON u.id = p.id
+       WHERE LOWER(u.email) = $1 
+          OR LOWER(COALESCE(u.username, '')) = $1 
+          OR LOWER(COALESCE(p.username, '')) = $1`,
+      [cleanId]
     );
 
     if (!user) {

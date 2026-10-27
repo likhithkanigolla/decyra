@@ -58,27 +58,33 @@ function EditProject() {
   if (data && !data.isAdmin && data.myRole !== "project_admin") {
     return (
       <div className="p-8 max-w-2xl mx-auto">
-        <p className="text-sm text-muted-foreground">You don't have permission to edit this project.</p>
+        <p className="text-sm text-muted-foreground">
+          You don't have permission to edit this project.
+        </p>
       </div>
     );
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!form.git_pat || !form.git_pat.trim()) {
+      toast.error("Editing project info requires the git token is mandatory.");
+      return;
+    }
     setBusy(true);
     try {
       await updateProjectFn({
         data: {
           id: projectId,
           ...form,
-          git_pat: form.git_pat ? form.git_pat.trim() : null,
+          git_pat: form.git_pat.trim(),
           required_approvals: Number(form.required_approvals),
         },
       });
       toast.success("Project updated");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       navigate({ to: "/projects/$projectId", params: { projectId } });
-    } catch (err: any) {
+    } catch (err: unknown) {
       toast.error(getErrorMessage(err, "Failed to update project"));
     } finally {
       setBusy(false);
@@ -109,7 +115,10 @@ function EditProject() {
         Update project metadata and configuration.
       </p>
 
-      <form onSubmit={submit} className="mt-6 space-y-4 rounded-lg border border-border bg-card p-6">
+      <form
+        onSubmit={submit}
+        className="mt-6 space-y-4 rounded-lg border border-border bg-card p-6"
+      >
         <Field label="Project name">
           <input
             required
@@ -128,6 +137,15 @@ function EditProject() {
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           />
         </Field>
+
+        <div className="rounded-md border border-blue-500/20 bg-blue-500/5 p-3 text-xs text-muted-foreground">
+          <p className="font-medium text-foreground">Git Repository & Migration</p>
+          <p className="mt-1">
+            Editing project info requires providing your Git personal access token. Modifying the
+            repository URL, branch, or ADR directory will automatically migrate all published ADRs
+            to the new repository target.
+          </p>
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Git repository URL">
@@ -168,12 +186,16 @@ function EditProject() {
           </Field>
         </div>
 
-        <Field label="GitHub Personal Access Token (Optional)" hint="Required for auto-pushing ADRs to a private repository">
+        <Field
+          label="Git Personal Access Token (Mandatory)"
+          hint="Required when editing project info and for repository migration"
+        >
           <input
+            required
             type="password"
             value={form.git_pat}
             onChange={(e) => setForm({ ...form, git_pat: e.target.value })}
-            placeholder="Leave blank to keep existing, or enter ghp_..."
+            placeholder="Enter token (e.g. ghp_... or glpat-...)"
             className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm font-mono"
           />
         </Field>
@@ -191,7 +213,7 @@ function EditProject() {
             type="submit"
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? "Saving…" : "Save changes"}
+            {busy ? "Saving & migrating…" : "Save changes"}
           </button>
         </div>
       </form>
@@ -212,9 +234,7 @@ function Field({
     <label className="block">
       <span className="mb-1 block text-xs font-medium text-muted-foreground">{label}</span>
       {children}
-      {hint && (
-        <span className="mt-1 block text-xs text-muted-foreground/80">{hint}</span>
-      )}
+      {hint && <span className="mt-1 block text-xs text-muted-foreground/80">{hint}</span>}
     </label>
   );
 }

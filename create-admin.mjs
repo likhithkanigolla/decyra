@@ -149,12 +149,19 @@ function verifyJwt(token) {
   }
 }
 async function loginLocal(identifier, password2) {
+  const cleanId = identifier.trim().replace(/^@/, "").toLowerCase();
   const user = await queryOne(
-    `SELECT u.id, u.email, u.username, u.full_name, u.password_hash, u.role, p.is_locked 
+    `SELECT u.id, u.email, 
+            COALESCE(u.username, p.username) AS username, 
+            COALESCE(u.full_name, p.full_name) AS full_name, 
+            u.password_hash, u.role, 
+            COALESCE(p.is_locked, false) AS is_locked 
      FROM public.local_users u 
      LEFT JOIN public.profiles p ON u.id = p.id 
-     WHERE u.email = $1 OR u.username = $1`,
-    [identifier.toLowerCase().trim()]
+     WHERE LOWER(u.email) = $1 
+        OR LOWER(COALESCE(u.username, '')) = $1 
+        OR LOWER(COALESCE(p.username, '')) = $1`,
+    [cleanId]
   );
   if (!user) throw new Error("Invalid email, username, or password");
   if (user.is_locked) {
@@ -162,20 +169,39 @@ async function loginLocal(identifier, password2) {
   }
   const valid = await verifyPassword(password2, user.password_hash);
   if (!valid) throw new Error("Invalid email, username, or password");
+  if (user.username) {
+    await query(
+      `UPDATE public.local_users SET username = $1 WHERE id = $2 AND username IS NULL`,
+      [user.username, user.id]
+    ).catch(() => {
+    });
+  }
   const token = signJwt({ sub: user.id, email: user.email, role: user.role });
-  return { token, user: { id: user.id, email: user.email, username: user.username, full_name: user.full_name, role: user.role } };
+  return {
+    token,
+    user: {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      full_name: user.full_name,
+      role: user.role
+    }
+  };
 }
-async function signUpLocal(email2, password2, fullName2, role = "member", username) {
-  const user = await createLocalUser(email2, password2, fullName2, role, username);
+async function signUpLocal(email2, password2, fullName2, role = "member", username2) {
+  const user = await createLocalUser(email2, password2, fullName2, role, username2);
   const token = signJwt({ sub: user.id, email: user.email, role: user.role });
   return { token, user };
 }
-async function createLocalUser(email2, password2, fullName2, role = "member", username) {
+async function createLocalUser(email2, password2, fullName2, role = "member", username2) {
   const existingEmail = email2.toLowerCase().trim();
-  const existingUser = username ? username.toLowerCase().trim() : null;
+  const existingUser = username2 ? username2.trim().replace(/^@/, "").toLowerCase() : null;
   const existing = await queryOne(
-    "SELECT id FROM public.local_users WHERE email = $1 OR (username IS NOT NULL AND username = $2)",
-    [existingEmail, existingUser]
+    `SELECT id FROM public.local_users WHERE LOWER(email) = $1 OR (username IS NOT NULL AND LOWER(username) = $2)
+     UNION
+     SELECT id FROM public.profiles WHERE LOWER(email) = $1 OR (username IS NOT NULL AND LOWER(username) = $2)
+     LIMIT 1`,
+    [existingEmail, existingUser ?? ""]
   );
   if (existing) throw new Error("A user with that email or username already exists");
   const passwordHash = await hashPassword(password2);
@@ -245,10 +271,15 @@ async function generateAndSaveRecoveryKey(userId, email2) {
   return recoveryKey;
 }
 async function resetPasswordWithRecoveryKey(identifier, recoveryKey, newPassword) {
+  const cleanId = identifier.trim().replace(/^@/, "").toLowerCase();
   const user = await queryOne(
-    `SELECT id, email, recovery_key_hash FROM public.local_users 
-     WHERE email = $1 OR username = $1`,
-    [identifier.toLowerCase().trim()]
+    `SELECT u.id, u.email, u.recovery_key_hash 
+     FROM public.local_users u
+     LEFT JOIN public.profiles p ON u.id = p.id
+     WHERE LOWER(u.email) = $1 
+        OR LOWER(COALESCE(u.username, '')) = $1 
+        OR LOWER(COALESCE(p.username, '')) = $1`,
+    [cleanId]
   );
   if (!user || !user.recovery_key_hash) {
     throw new Error("Invalid account or no recovery key has been configured.");
@@ -458,18 +489,20 @@ if (process.argv[1] === __filename) {
 var email = process.env.ADMIN_EMAIL || "decyra_admin";
 var password = process.env.ADMIN_PASSWORD || "admin1234";
 var fullName = process.env.ADMIN_NAME || "Platform Admin";
+var username = process.env.ADMIN_USERNAME || (email.includes("@") ? email.split("@")[0] : email);
 async function main() {
   console.log("\u{1F504} Ensuring database is migrated...");
   await runMigrations();
   console.log(`
 \u{1F464} Creating admin user:`);
   console.log(`   Email    : ${email}`);
+  console.log(`   Username : ${username}`);
   console.log(`   Name     : ${fullName}`);
   console.log(`   Password : ${"*".repeat(password.length)}`);
   console.log(`   Role     : admin
 `);
   try {
-    const user = await createLocalUser(email, password, fullName, "admin");
+    const user = await createLocalUser(email, password, fullName, "admin", username);
     console.log("\u2705 Admin user created successfully!");
     console.log(`   ID: ${user.id}`);
     if (user.recoveryKey) {
@@ -477,8 +510,8 @@ async function main() {
     }
     console.log(`
 \u{1F680} You can now log in at http://localhost:3000/auth`);
-    console.log(`   Email   : ${email}`);
-    console.log(`   Password: (the one you set)`);
+    console.log(`   Email/Username: ${user.username || email}`);
+    console.log(`   Password      : (the one you set)`);
   } catch (err) {
     if (err.message?.includes("already exists")) {
       console.log("\u2139\uFE0F  A user with that email already exists.");

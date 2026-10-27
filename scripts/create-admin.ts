@@ -16,6 +16,7 @@ import { runMigrations } from '../src/integrations/database/migrate.ts';
 const email = process.env.ADMIN_EMAIL || 'decyra_admin';
 const password = process.env.ADMIN_PASSWORD || 'admin1234';
 const fullName = process.env.ADMIN_NAME || 'Platform Admin';
+const username = process.env.ADMIN_USERNAME || (email.includes('@') ? email.split('@')[0] : email);
 
 async function main() {
   console.log('🔄 Ensuring database is migrated...');
@@ -23,20 +24,21 @@ async function main() {
 
   console.log(`\n👤 Creating admin user:`);
   console.log(`   Email    : ${email}`);
+  console.log(`   Username : ${username}`);
   console.log(`   Name     : ${fullName}`);
   console.log(`   Password : ${'*'.repeat(password.length)}`);
   console.log(`   Role     : admin\n`);
 
   try {
-    const user = await createLocalUser(email, password, fullName, 'admin');
+    const user = await createLocalUser(email, password, fullName, 'admin', username);
     console.log('✅ Admin user created successfully!');
     console.log(`   ID: ${user.id}`);
     if (user.recoveryKey) {
       console.log(`   🔑 Recovery Key saved to server: recovery-keys/${email.replace(/[^a-zA-Z0-9._-]/g, '_')}.recovery.key`);
     }
     console.log(`\n🚀 You can now log in at http://localhost:3000/auth`);
-    console.log(`   Email   : ${email}`);
-    console.log(`   Password: (the one you set)`);
+    console.log(`   Email/Username: ${user.username || email}`);
+    console.log(`   Password      : (the one you set)`);
   } catch (err: any) {
     if (err.message?.includes('already exists')) {
       console.log('ℹ️  A user with that email already exists.');

@@ -2,12 +2,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireAuth, requireFlexibleAuth } from "@/integrations/database/auth-middleware";
 import type { AuthContext, FlexibleAuthContext } from "@/integrations/database/auth-middleware";
 import { z } from "zod";
-import { simpleGit } from "simple-git";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
 import { randomBytes } from "node:crypto";
-import { parseAdrMarkdown } from "@/lib/adr-markdown";
+import { parseAdrMarkdown, extractAdrIdentifier, inspectAdrIdentifier } from "@/lib/adr-markdown";
 import { getDatabaseConfig } from "@/integrations/database/config";
 import * as Y from "yjs";
 
@@ -52,11 +48,11 @@ type AdrCollaborationAccess = {
 
 async function assertAdrCollaborationAccess(
   context: AuthContext,
-  adrId: string
+  adrId: string,
 ): Promise<AdrCollaborationAccess> {
   const adr = await pgOne<AdrCollaborationAccess>(
     "SELECT author_id, project_id, status FROM adrs WHERE id = $1",
-    [adrId]
+    [adrId],
   );
 
   if (!adr) throw new Error("ADR not found.");
@@ -87,13 +83,13 @@ async function publishAdrCollaborationSignal(
   context: AuthContext,
   adrId: string,
   key: string,
-  value: string
+  value: string,
 ) {
   const room = await pgOne("SELECT adr_id FROM adr_collaboration_rooms WHERE adr_id = $1", [adrId]);
   if (!room) return;
   await pgQuery(
     "INSERT INTO adr_collaboration_updates (adr_id, update_data, created_by) VALUES ($1, $2, $3)",
-    [adrId, makeAdrCollaborationSignal(key, value), context.userId]
+    [adrId, makeAdrCollaborationSignal(key, value), context.userId],
   );
 }
 
@@ -109,83 +105,6 @@ function assertRequiredAdrContent(adr: {
   if (missing.length) {
     throw new Error(`Required ADR fields are missing: ${missing.join(", ")}`);
   }
-}
-
-function buildGitCloneUrl(repoUrl: string, gitPat?: string | null) {
-  let url: URL;
-  try {
-    url = new URL(repoUrl.trim());
-  } catch {
-    throw new Error("Enter a valid HTTPS repository URL.");
-  }
-
-  const supportedHosts = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
-  if (
-    url.protocol !== "https:" ||
-    !supportedHosts.has(url.hostname.toLowerCase()) ||
-    url.port ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    url.pathname.split("/").filter(Boolean).length < 2
-  ) {
-    throw new Error("Only HTTPS GitHub, GitLab, and Bitbucket repository URLs are supported.");
-  }
-
-  if (!gitPat) return url.toString();
-
-  switch (url.hostname.toLowerCase()) {
-    case "github.com":
-      url.username = "x-access-token";
-      break;
-    case "gitlab.com":
-      url.username = "oauth2";
-      break;
-    default:
-      url.username = "x-token-auth";
-  }
-  url.password = gitPat;
-  return url.toString();
-}
-
-function collectMarkdownFiles(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  const files: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...collectMarkdownFiles(fullPath));
-    } else if (/\.(md|markdown)$/i.test(entry.name)) {
-      files.push(fullPath);
-      if (files.length > 5_000) {
-        throw new Error("The repository contains too many Markdown files to import at once.");
-      }
-    }
-  }
-  return files.sort((left, right) => left.localeCompare(right));
-}
-
-function resolveRepositoryAdrPath(repoDir: string, adrPath: string) {
-  const normalizedPath = adrPath.trim().replaceAll("\\", "/");
-  if (
-    path.posix.isAbsolute(normalizedPath) ||
-    normalizedPath.split("/").includes("..")
-  ) {
-    throw new Error("ADR path must be a directory inside the repository.");
-  }
-
-  const resolvedRepo = path.resolve(repoDir);
-  const resolvedAdrPath = path.resolve(resolvedRepo, normalizedPath || ".");
-  if (resolvedAdrPath !== resolvedRepo && !resolvedAdrPath.startsWith(`${resolvedRepo}${path.sep}`)) {
-    throw new Error("ADR path must be a directory inside the repository.");
-  }
-  const realRepoPath = fs.realpathSync(resolvedRepo);
-  const realAdrPath = fs.realpathSync(resolvedAdrPath);
-  if (realAdrPath !== realRepoPath && !realAdrPath.startsWith(`${realRepoPath}${path.sep}`)) {
-    throw new Error("ADR path must be a directory inside the repository.");
-  }
-  return realAdrPath;
 }
 
 async function assertProjectManager(context: AuthContext, projectId: string) {
@@ -224,7 +143,10 @@ function validateGitHubRepositoryUrl(repoUrl: string | null) {
     repo.port ||
     repo.search ||
     repo.hash ||
-    repo.pathname.replace(/\.git$/i, "").split("/").filter(Boolean).length !== 2
+    repo.pathname
+      .replace(/\.git$/i, "")
+      .split("/")
+      .filter(Boolean).length !== 2
   ) {
     throw new Error("Configure an HTTPS GitHub repository URL before enabling sync.");
   }
@@ -388,6 +310,111 @@ export const createProject = createServerFn({ method: "POST" })
 
 // ─── updateProject (NEW — fixes Issue 4) ─────────────────────────────────────
 
+export interface UpdateProjectInput {
+  id: string;
+  name: string;
+  description?: string;
+  repo_url?: string;
+  branch?: string;
+  adr_path?: string;
+  git_pat?: string | null;
+  required_approvals?: number;
+}
+
+export async function updateProjectService(userId: string, data: UpdateProjectInput) {
+  const gitToken = data.git_pat?.trim();
+  if (!gitToken) {
+    throw new Error("Editing project info requires the git token is mandatory.");
+  }
+
+  const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [
+    userId,
+  ]));
+  const isProjectAdmin = !!(await pgOne(
+    "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
+    [userId, data.id],
+  ));
+  if (!isAdmin && !isProjectAdmin) {
+    throw new Error("Only admins or project admins can edit projects.");
+  }
+
+  const existing = await pgOne<any>("SELECT * FROM projects WHERE id = $1", [data.id]);
+  if (!existing) {
+    throw new Error("Project not found");
+  }
+
+  const newRepoUrl = data.repo_url?.trim() || null;
+  const newBranch = data.branch?.trim() || "main";
+  const newAdrPath = data.adr_path?.trim() || "docs/adr";
+
+  const oldRepoUrl = existing.repo_url?.trim() || null;
+  const oldBranch = existing.branch?.trim() || "main";
+  const oldAdrPath = existing.adr_path?.trim() || "docs/adr";
+
+  const gitConfigChanged =
+    Boolean(newRepoUrl) &&
+    (newRepoUrl !== oldRepoUrl || newBranch !== oldBranch || newAdrPath !== oldAdrPath);
+
+  if (gitConfigChanged) {
+    const publishedAdrs = await pgQuery<any>(
+      `SELECT a.*, p.code AS proj_code,
+         (SELECT pv.markdown FROM published_versions pv WHERE pv.adr_id = a.id ORDER BY pv.version_number DESC LIMIT 1) AS latest_markdown
+       FROM adrs a
+       JOIN projects p ON p.id = a.project_id
+       WHERE a.project_id = $1 AND a.status = 'published' AND a.repository_deleted_at IS NULL
+       ORDER BY a.full_id ASC`,
+      [data.id],
+    );
+
+    const { generateAdrMarkdown } = await import("@/lib/adr-markdown");
+    const { migrateProjectAdrsToGit } = await import("@/lib/api/git.server");
+
+    const adrsToMigrate = (publishedAdrs?.rows ?? []).map((a: any) => ({
+      id: a.id,
+      full_id: a.full_id,
+      markdown: a.latest_markdown || generateAdrMarkdown(a),
+    }));
+
+    const migrationResult = await migrateProjectAdrsToGit({
+      project: {
+        repo_url: newRepoUrl!,
+        branch: newBranch,
+        adr_path: newAdrPath,
+        git_pat: gitToken,
+      },
+      adrs: adrsToMigrate,
+    });
+
+    for (const item of migrationResult.adrPaths) {
+      await pgQuery(
+        "UPDATE adrs SET repository_path = $1, repository_deleted_at = NULL WHERE id = $2",
+        [item.repositoryPath, item.id],
+      );
+    }
+  }
+
+  const updated = await pgOne<any>(
+    `UPDATE projects SET
+       name = $1, description = $2, repo_url = $3,
+       branch = $4, adr_path = $5, git_pat = $6, required_approvals = COALESCE($7, required_approvals)
+     WHERE id = $8
+     RETURNING *`,
+    [
+      data.name,
+      data.description ?? null,
+      newRepoUrl,
+      newBranch,
+      newAdrPath,
+      gitToken,
+      data.required_approvals ?? null,
+      data.id,
+    ],
+  );
+  if (!updated) throw new Error("Project not found");
+  delete updated.git_pat;
+  return updated;
+}
+
 export const updateProject = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) =>
@@ -406,40 +433,7 @@ export const updateProject = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
-
-    const isAdmin = !!(await pgOne(
-      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-      [userId],
-    ));
-    const isProjectAdmin = !!(await pgOne(
-      "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
-      [userId, data.id],
-    ));
-    if (!isAdmin && !isProjectAdmin) {
-      throw new Error("Only admins or project admins can edit projects.");
-    }
-
-    const updated = await pgOne<any>(
-      `UPDATE projects SET
-         name = $1, description = $2, repo_url = $3,
-         branch = $4, adr_path = $5, git_pat = $6, required_approvals = COALESCE($7, required_approvals)
-       WHERE id = $8
-       RETURNING *`,
-      [
-        data.name,
-        data.description ?? null,
-        data.repo_url || null,
-        data.branch || "main",
-        data.adr_path || "docs/adr",
-        data.git_pat ?? null,
-        data.required_approvals ?? null,
-        data.id,
-      ],
-    );
-    if (!updated) throw new Error("Project not found");
-    delete updated.git_pat;
-    return updated;
+    return updateProjectService(context.userId, data);
   });
 
 // ─── getProject ───────────────────────────────────────────────────────────────
@@ -455,28 +449,37 @@ export const getProject = createServerFn({ method: "POST" })
     if (!project) throw new Error("Project not found");
     delete project.git_pat;
 
-    const [membersRow, adrsRow, myMembershipRow, rolesRow] = await Promise.all([
-      pgQuery(
-        `SELECT pm.id, pm.role, pm.user_id,
-                pr.full_name, pr.email, pr.avatar_url
-         FROM project_members pm
-         LEFT JOIN profiles pr ON pr.id = pm.user_id
-         WHERE pm.project_id = $1`,
-        [data.id],
-      ),
-      pgQuery(
-        `SELECT id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at
-         FROM adrs WHERE project_id = $1
-           AND (status <> 'draft' OR author_id = $2)
-         ORDER BY adr_number DESC`,
-        [data.id, userId],
-      ),
-      pgOne<{ role: string }>(
-        "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2",
-        [data.id, userId],
-      ),
-      pgQuery("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
-    ]);
+    const [membersRow, adrsRow, myMembershipRow, rolesRow, deletionApprovalsRow] =
+      await Promise.all([
+        pgQuery(
+          `SELECT pm.id, pm.role, pm.user_id,
+                  pr.full_name, pr.email, pr.avatar_url
+           FROM project_members pm
+           LEFT JOIN profiles pr ON pr.id = pm.user_id
+           WHERE pm.project_id = $1`,
+          [data.id],
+        ),
+        pgQuery(
+          `SELECT id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at
+           FROM adrs WHERE project_id = $1
+             AND (status <> 'draft' OR author_id = $2)
+           ORDER BY adr_number DESC`,
+          [data.id, userId],
+        ),
+        pgOne<{ role: string }>(
+          "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2",
+          [data.id, userId],
+        ),
+        pgQuery("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
+        pgQuery(
+          `SELECT pda.id, pda.user_id, pda.created_at, pr.full_name, pr.email, pr.avatar_url
+           FROM project_deletion_approvals pda
+           LEFT JOIN profiles pr ON pr.id = pda.user_id
+           WHERE pda.project_id = $1
+           ORDER BY pda.created_at ASC`,
+          [data.id],
+        ),
+      ]);
 
     const members = (membersRow.rows ?? []).map((m: any) => ({
       id: m.id,
@@ -490,16 +493,259 @@ export const getProject = createServerFn({ method: "POST" })
       throw new Error("Unauthorized: You do not have access to this project.");
     }
 
+    const deletionApprovals = (deletionApprovalsRow.rows ?? []).map((a: any) => ({
+      id: a.id,
+      user_id: a.user_id,
+      created_at: a.created_at,
+      full_name: a.full_name,
+      email: a.email,
+      avatar_url: a.avatar_url,
+    }));
+    const deletionApprovalCount = deletionApprovals.length;
+    const hasUserApprovedDeletion = deletionApprovals.some((a: any) => a.user_id === userId);
+    const canDeleteProject =
+      deletionApprovalCount >= 3 && (isAdmin || myMembershipRow?.role === "project_admin");
+
     return {
       project,
       members,
       adrs: adrsRow.rows ?? [],
       myRole: myMembershipRow?.role ?? null,
       isAdmin,
+      deletionApprovals,
+      deletionApprovalCount,
+      hasUserApprovedDeletion,
+      canDeleteProject,
     };
   });
 
 // ─── migrateAdrsFromRepository ─────────────────────────────────────────────────
+
+interface MigrationProjectRow {
+  id: string;
+  name: string;
+  code: string;
+  repo_url: string | null;
+  branch: string | null;
+  adr_path: string | null;
+  git_pat: string | null;
+  adr_sequence: number;
+}
+
+export async function migrateAdrsFromRepositoryService(
+  userId: string,
+  data: {
+    project_id: string;
+    repo_url?: string;
+    branch?: string;
+    adr_path?: string;
+    update_existing?: boolean;
+  },
+) {
+  const project = await pgOne<MigrationProjectRow>("SELECT * FROM projects WHERE id = $1", [
+    data.project_id,
+  ]);
+  const projectRow = project;
+  if (!projectRow) throw new Error("Project not found.");
+
+  const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [
+    userId,
+  ]));
+  const isProjectAdmin = !!(await pgOne(
+    "SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = 'project_admin'",
+    [data.project_id, userId],
+  ));
+  if (!isAdmin && !isProjectAdmin)
+    throw new Error("Only admins or project admins can import ADRs.");
+
+  const repoUrl = (data.repo_url ?? projectRow.repo_url ?? "").trim();
+  const branch = (data.branch ?? projectRow.branch ?? "main").trim() || "main";
+  const adrPath =
+    data.adr_path !== undefined ? data.adr_path.trim() : (projectRow.adr_path ?? "docs/adr").trim();
+  const gitPat = projectRow.git_pat ?? null;
+  if (!repoUrl) throw new Error("This project does not have a repository URL configured.");
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/.test(branch) ||
+    branch.includes("..") ||
+    branch.includes("//") ||
+    branch.endsWith("/")
+  ) {
+    throw new Error("Enter a valid Git branch name.");
+  }
+
+  const { cloneAndReadRepositoryAdrs } = await import("@/lib/api/git.server");
+  const { files: markdownFiles, skippedFiles } = await cloneAndReadRepositoryAdrs({
+    repoUrl,
+    gitPat,
+    branch,
+    adrPath,
+  });
+
+  const imported: string[] = [];
+  const updated: string[] = [];
+  const skippedDetails: Array<{ file: string; reason: string }> = [];
+
+  for (const f of skippedFiles) {
+    skippedDetails.push({ file: f, reason: "Non-markdown file or unsupported format" });
+  }
+
+  const seenIdsInBatch = new Set<string>();
+
+  for (const item of markdownFiles) {
+    // Validate [Project code-ADR-XXX] format
+    const inspectResult = inspectAdrIdentifier(item.fileName, item.markdown, projectRow.code);
+    if (!inspectResult.success) {
+      skippedDetails.push({ file: item.fileName, reason: inspectResult.reason });
+      continue;
+    }
+    const adrIdInfo = inspectResult.data;
+
+    if (seenIdsInBatch.has(adrIdInfo.fullId.toUpperCase())) {
+      skippedDetails.push({
+        file: item.fileName,
+        reason: `Duplicate ADR identifier (${adrIdInfo.fullId}) already processed in this import`,
+      });
+      continue;
+    }
+
+    const parsed = parseAdrMarkdown(item.markdown);
+    const title = (adrIdInfo.cleanTitle || parsed.title || adrIdInfo.fullId).trim();
+    if (
+      !title ||
+      !parsed.context?.trim() ||
+      !parsed.decision?.trim() ||
+      !parsed.consequences?.trim()
+    ) {
+      skippedDetails.push({
+        file: item.fileName,
+        reason: "Missing required ADR sections (Context, Decision, Consequences)",
+      });
+      continue;
+    }
+
+    const normalizedTitle = title.replace(/\s+/g, " ").trim();
+    const existing = await pgOne<{ id: string; status: string }>(
+      "SELECT id, status FROM adrs WHERE project_id = $1 AND lower(full_id) = lower($2) LIMIT 1",
+      [data.project_id, adrIdInfo.fullId],
+    );
+
+    if (existing) {
+      if (data.update_existing) {
+        await pgOne(
+          `UPDATE adrs
+           SET title = $1, tags = $2::text[], context = $3, decision = $4,
+               consequences = $5, alternatives = $6, design_changes = $7::jsonb,
+               major_impacts = $8::jsonb, references_data = $9::jsonb, updated_at = NOW()
+           WHERE id = $10`,
+          [
+            normalizedTitle,
+            parsed.tags ?? [],
+            parsed.context,
+            parsed.decision,
+            parsed.consequences,
+            parsed.alternatives ?? "",
+            JSON.stringify(parsed.design_changes ?? {}),
+            JSON.stringify(parsed.major_impacts ?? {}),
+            JSON.stringify(parsed.references_data ?? {}),
+            existing.id,
+          ],
+        );
+        updated.push(item.fileName);
+        seenIdsInBatch.add(adrIdInfo.fullId.toUpperCase());
+        continue;
+      } else {
+        skippedDetails.push({
+          file: item.fileName,
+          reason: `ADR ${adrIdInfo.fullId} already exists in this project`,
+        });
+        continue;
+      }
+    }
+
+    const rawStatus = parsed.status?.toLowerCase();
+    const status = ["draft", "under_review", "approved", "published"].includes(rawStatus ?? "")
+      ? rawStatus
+      : "published";
+
+    const payload = {
+      project_id: data.project_id,
+      title: normalizedTitle,
+      tags: parsed.tags ?? [],
+      context: parsed.context,
+      decision: parsed.decision,
+      consequences: parsed.consequences,
+      alternatives: parsed.alternatives ?? "",
+      design_changes: parsed.design_changes ?? {
+        api_changes: "",
+        workflow_changes: "",
+        service_changes: "",
+        infrastructure_changes: "",
+        data_model_changes: "",
+      },
+      major_impacts: parsed.major_impacts ?? {
+        operational: "",
+        testing: "",
+        security: "",
+        documentation: "",
+        scalability: "",
+      },
+      references_data: parsed.references_data ?? {
+        pull_requests: [],
+        git_commits: [],
+        design_docs: [],
+        wiki_pages: [],
+        external: [],
+      },
+      author_id: userId,
+      adr_number: adrIdInfo.adrNumber,
+      full_id: adrIdInfo.fullId,
+      status,
+    };
+
+    const insert = await pgOne<{ id: string }>(
+      `INSERT INTO adrs
+       (project_id, title, tags, context, decision, consequences, alternatives,
+        design_changes, major_impacts, references_data, author_id, adr_number, full_id, status)
+       VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11, $12, $13, $14)
+       RETURNING *`,
+      [
+        payload.project_id,
+        payload.title,
+        payload.tags,
+        payload.context,
+        payload.decision,
+        payload.consequences,
+        payload.alternatives,
+        JSON.stringify(payload.design_changes),
+        JSON.stringify(payload.major_impacts),
+        JSON.stringify(payload.references_data),
+        payload.author_id,
+        payload.adr_number,
+        payload.full_id,
+        payload.status,
+      ],
+    );
+
+    if (insert) {
+      imported.push(item.fileName);
+      seenIdsInBatch.add(adrIdInfo.fullId.toUpperCase());
+      await pgOne("UPDATE projects SET adr_sequence = GREATEST(adr_sequence, $1) WHERE id = $2", [
+        adrIdInfo.adrNumber,
+        data.project_id,
+      ]);
+    }
+  }
+
+  return {
+    imported: imported.length,
+    updated: updated.length,
+    skipped: skippedDetails.length,
+    files: imported,
+    updatedFiles: updated,
+    skippedFiles: skippedDetails.map((s) => s.file),
+    skippedDetails,
+  };
+}
 
 export const migrateAdrsFromRepository = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
@@ -510,149 +756,13 @@ export const migrateAdrsFromRepository = createServerFn({ method: "POST" })
         repo_url: z.string().trim().max(2_048).optional(),
         branch: z.string().trim().max(255).optional(),
         adr_path: z.string().trim().max(1_024).optional(),
+        update_existing: z.boolean().optional(),
       })
       .parse(d),
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
-
-    const project = await pgOne<any>("SELECT * FROM projects WHERE id = $1", [data.project_id]);
-    const projectRow = project;
-    if (!projectRow) throw new Error("Project not found.");
-
-    const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]));
-    const isProjectAdmin = !!(await pgOne(
-      "SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = 'project_admin'",
-      [data.project_id, userId],
-    ));
-    if (!isAdmin && !isProjectAdmin)
-      throw new Error("Only admins or project admins can import ADRs.");
-
-    const repoUrl = (data.repo_url ?? projectRow.repo_url ?? "").trim();
-    const branch = (data.branch ?? projectRow.branch ?? "main").trim() || "main";
-    const adrPath = (data.adr_path ?? projectRow.adr_path ?? "docs/adr").trim();
-    const gitPat = projectRow.git_pat ?? null;
-    if (!repoUrl) throw new Error("This project does not have a repository URL configured.");
-    if (
-      !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/.test(branch) ||
-      branch.includes("..") ||
-      branch.includes("//") ||
-      branch.endsWith("/")
-    ) {
-      throw new Error("Enter a valid Git branch name.");
-    }
-
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "decyra-import-"));
-    try {
-      const workingRepoUrl = buildGitCloneUrl(repoUrl, gitPat);
-      const client = simpleGit();
-      await client.clone(workingRepoUrl, tmpDir, ["--branch", branch, "--depth", "1"]);
-
-      const resolvedDir = resolveRepositoryAdrPath(tmpDir, adrPath);
-      const markdownFiles = collectMarkdownFiles(resolvedDir);
-      if (markdownFiles.length === 0) {
-        throw new Error(`No markdown ADR files were found in ${adrPath || "the repository root"}.`);
-      }
-
-      const imported: string[] = [];
-      const skipped: string[] = [];
-
-      for (const filePath of markdownFiles) {
-        if (fs.statSync(filePath).size > 1_000_000) {
-          skipped.push(path.basename(filePath));
-          continue;
-        }
-        const markdown = fs.readFileSync(filePath, "utf-8");
-        const parsed = parseAdrMarkdown(markdown);
-        const title = parsed.title?.trim();
-        if (
-          !title ||
-          !parsed.context?.trim() ||
-          !parsed.decision?.trim() ||
-          !parsed.consequences?.trim()
-        ) {
-          skipped.push(path.basename(filePath));
-          continue;
-        }
-
-        const normalizedTitle = title.replace(/\s+/g, " ").trim();
-        const existing = await pgOne<{ id: string }>(
-          "SELECT id FROM adrs WHERE project_id = $1 AND lower(title) = lower($2) LIMIT 1",
-          [data.project_id, normalizedTitle],
-        );
-
-        if (existing) {
-          skipped.push(path.basename(filePath));
-          continue;
-        }
-
-        const payload = {
-          project_id: data.project_id,
-          title: normalizedTitle,
-          tags: parsed.tags ?? [],
-          context: parsed.context,
-          decision: parsed.decision,
-          consequences: parsed.consequences,
-          alternatives: parsed.alternatives ?? "",
-          design_changes: parsed.design_changes ?? {
-            api_changes: "",
-            workflow_changes: "",
-            service_changes: "",
-            infrastructure_changes: "",
-            data_model_changes: "",
-          },
-          major_impacts: parsed.major_impacts ?? {
-            operational: "",
-            testing: "",
-            security: "",
-            documentation: "",
-            scalability: "",
-          },
-          references_data: parsed.references_data ?? {
-            pull_requests: [],
-            git_commits: [],
-            design_docs: [],
-            wiki_pages: [],
-            external: [],
-          },
-          author_id: userId,
-          adr_number: 0,
-          full_id: "PENDING",
-        };
-
-        const insert = await pgOne<any>(
-          `INSERT INTO adrs
-           (project_id, title, tags, context, decision, consequences, alternatives,
-            design_changes, major_impacts, references_data, author_id)
-           VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11)
-           RETURNING *`,
-          [
-            payload.project_id,
-            payload.title,
-            payload.tags,
-            payload.context,
-            payload.decision,
-            payload.consequences,
-            payload.alternatives,
-            JSON.stringify(payload.design_changes),
-            JSON.stringify(payload.major_impacts),
-            JSON.stringify(payload.references_data),
-            payload.author_id,
-          ],
-        );
-        if (insert) imported.push(path.basename(filePath));
-      }
-
-      return {
-        imported: imported.length,
-        skipped: skipped.length,
-        files: imported,
-        skippedFiles: skipped,
-      };
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    return migrateAdrsFromRepositoryService(context.userId, data);
   });
 
 const projectArchiveAdrSchema = z.object({
@@ -732,7 +842,9 @@ export const exportProjectArchive = createServerFn({ method: "POST" })
     const { userId } = context;
     await assertProjectManager(context, data.project_id);
 
-    const project = await pgOne<{ code: string }>("SELECT code FROM projects WHERE id = $1", [data.project_id]);
+    const project = await pgOne<{ code: string }>("SELECT code FROM projects WHERE id = $1", [
+      data.project_id,
+    ]);
     if (!project) throw new Error("Project not found.");
 
     const adrs = (
@@ -781,7 +893,13 @@ export const exportProjectArchive = createServerFn({ method: "POST" })
         const sourceFullId = fullIdByAdrId.get(relationship.source_adr_id);
         const targetFullId = fullIdByAdrId.get(relationship.target_adr_id);
         return sourceFullId && targetFullId
-          ? [{ source_full_id: sourceFullId, target_full_id: targetFullId, rel_type: relationship.rel_type }]
+          ? [
+              {
+                source_full_id: sourceFullId,
+                target_full_id: targetFullId,
+                rel_type: relationship.rel_type,
+              },
+            ]
           : [];
       }),
     };
@@ -951,13 +1069,7 @@ export const createUser = createServerFn({ method: "POST" })
     if (!isAdmin) throw new Error("Only platform admins can create users.");
 
     const { createLocalUser } = await import("@/integrations/database/local-auth.server");
-    return createLocalUser(
-      data.email,
-      data.password,
-      data.full_name,
-      data.role,
-      data.username,
-    );
+    return createLocalUser(data.email, data.password, data.full_name, data.role, data.username);
   });
 
 // ─── loginLocal (NEW — local auth endpoint) ───────────────────────────────────
@@ -976,9 +1088,15 @@ export const loginLocalFn = createServerFn({ method: "POST" })
 export const lookupEmailByUsernameFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ username: z.string() }).parse(d))
   .handler(async ({ data }) => {
+    const cleanUsername = data.username.trim().replace(/^@/, "").toLowerCase();
     const profile = await pgOne<{ email: string }>(
-      "SELECT email FROM profiles WHERE LOWER(username) = $1",
-      [data.username.toLowerCase().trim()],
+      `SELECT COALESCE(p.email, lu.email) AS email 
+       FROM profiles p
+       FULL OUTER JOIN local_users lu ON lu.id = p.id
+       WHERE LOWER(COALESCE(p.username, '')) = $1 
+          OR LOWER(COALESCE(lu.username, '')) = $1
+       LIMIT 1`,
+      [cleanUsername],
     );
 
     if (!profile || !profile.email) {
@@ -1032,17 +1150,22 @@ export const generateRecoveryKeyFn = createServerFn({ method: "POST" })
       throw new Error("Recovery key generation is only available in local PostgreSQL mode.");
     }
     const { queryOne } = await import("@/integrations/database/postgres");
+    const cleanId = data.identifier.trim().replace(/^@/, "").toLowerCase();
     const user = await queryOne<{ id: string; email: string }>(
-      "SELECT id, email FROM public.local_users WHERE email = $1 OR username = $1",
-      [data.identifier.toLowerCase().trim()],
+      `SELECT u.id, u.email 
+       FROM public.local_users u
+       LEFT JOIN public.profiles p ON u.id = p.id
+       WHERE LOWER(u.email) = $1 
+          OR LOWER(COALESCE(u.username, '')) = $1 
+          OR LOWER(COALESCE(p.username, '')) = $1`,
+      [cleanId],
     );
     if (!user) {
       throw new Error("No user found with the provided email or username.");
     }
 
-    const { generateAndSaveRecoveryKey } = await import(
-      "@/integrations/database/local-auth.server"
-    );
+    const { generateAndSaveRecoveryKey } =
+      await import("@/integrations/database/local-auth.server");
     await generateAndSaveRecoveryKey(user.id, user.email);
 
     const sanitizedEmail = user.email.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -1070,9 +1193,8 @@ export const resetPasswordWithRecoveryKeyFn = createServerFn({ method: "POST" })
     if (!dbConfig.isLocal) {
       throw new Error("Recovery key reset is only available in local PostgreSQL mode.");
     }
-    const { resetPasswordWithRecoveryKey } = await import(
-      "@/integrations/database/local-auth.server"
-    );
+    const { resetPasswordWithRecoveryKey } =
+      await import("@/integrations/database/local-auth.server");
     return resetPasswordWithRecoveryKey(data.identifier, data.recoveryKey, data.newPassword);
   });
 
@@ -1108,22 +1230,101 @@ export const removeProjectMember = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-// ─── deleteProject ───────────────────────────────────────────────────────────
+// ─── deleteProject & deletion approvals ──────────────────────────────────────
+
+export async function approveProjectDeletionService(userId: string, projectId: string) {
+  const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [
+    userId,
+  ]));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, projectId],
+  );
+  if (!isAdmin && !member) {
+    throw new Error("Only project members or platform admins can approve project deletion.");
+  }
+  if (member && member.role === "intern") {
+    throw new Error("Interns cannot approve project deletion.");
+  }
+
+  await pgQuery(
+    `INSERT INTO project_deletion_approvals (project_id, user_id)
+     VALUES ($1, $2)
+     ON CONFLICT (project_id, user_id) DO NOTHING`,
+    [projectId, userId],
+  );
+
+  const countRow = await pgOne<{ count: string }>(
+    "SELECT COUNT(*) as count FROM project_deletion_approvals WHERE project_id = $1",
+    [projectId],
+  );
+  const count = Number(countRow?.count ?? 0);
+  return { ok: true, count, hasApproved: true };
+}
+
+export async function revokeProjectDeletionApprovalService(userId: string, projectId: string) {
+  await pgQuery("DELETE FROM project_deletion_approvals WHERE project_id = $1 AND user_id = $2", [
+    projectId,
+    userId,
+  ]);
+
+  const countRow = await pgOne<{ count: string }>(
+    "SELECT COUNT(*) as count FROM project_deletion_approvals WHERE project_id = $1",
+    [projectId],
+  );
+  const count = Number(countRow?.count ?? 0);
+  return { ok: true, count, hasApproved: false };
+}
+
+export async function deleteProjectService(userId: string, projectId: string) {
+  const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [
+    userId,
+  ]));
+  const isProjectAdmin = !!(await pgOne(
+    "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
+    [userId, projectId],
+  ));
+  if (!isAdmin && !isProjectAdmin) {
+    throw new Error("Only platform admins or project admins can delete projects.");
+  }
+
+  const countRow = await pgOne<{ count: string }>(
+    "SELECT COUNT(*) as count FROM project_deletion_approvals WHERE project_id = $1",
+    [projectId],
+  );
+  const count = Number(countRow?.count ?? 0);
+  if (count < 3) {
+    throw new Error(
+      `Deleting a project requires at least 3 approvals. Current approvals: ${count}/3. Please gather the required approvals before deleting.`,
+    );
+  }
+
+  await pgQuery("DELETE FROM projects WHERE id = $1", [projectId]);
+  return { ok: true };
+}
+
+export const approveProjectDeletion = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return approveProjectDeletionService(context.userId, data.project_id);
+  });
+
+export const revokeProjectDeletionApproval = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return revokeProjectDeletionApprovalService(context.userId, data.project_id);
+  });
 
 export const deleteProject = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
-
-    const isAdmin = !!(await pgOne(
-      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-      [userId],
-    ));
-    if (!isAdmin) throw new Error("Only platform admins can delete projects.");
-    await pgQuery("DELETE FROM projects WHERE id = $1", [data.id]);
-    return { ok: true };
+    return deleteProjectService(context.userId, data.id);
   });
 
 // ─── deleteUser ───────────────────────────────────────────────────────────────
@@ -1482,7 +1683,7 @@ function decodeYjsUpdate(encoded: string): Uint8Array {
 export const joinAdrCollaboration = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) =>
-    z.object({ adr_id: z.string().uuid(), initial_snapshot: encodedYjsUpdateSchema }).parse(d)
+    z.object({ adr_id: z.string().uuid(), initial_snapshot: encodedYjsUpdateSchema }).parse(d),
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
@@ -1494,14 +1695,16 @@ export const joinAdrCollaboration = createServerFn({ method: "POST" })
        VALUES ($1, $2, $3)
        ON CONFLICT (adr_id) DO NOTHING
        RETURNING snapshot`,
-      [data.adr_id, data.initial_snapshot, context.userId]
+      [data.adr_id, data.initial_snapshot, context.userId],
     );
     const snapshot =
       inserted?.snapshot ??
-      (await pgOne<{ snapshot: string }>(
-        "SELECT snapshot FROM adr_collaboration_rooms WHERE adr_id = $1",
-        [data.adr_id]
-      ))?.snapshot ??
+      (
+        await pgOne<{ snapshot: string }>(
+          "SELECT snapshot FROM adr_collaboration_rooms WHERE adr_id = $1",
+          [data.adr_id],
+        )
+      )?.snapshot ??
       null;
 
     if (!snapshot) throw new Error("Could not initialize ADR collaboration.");
@@ -1509,7 +1712,7 @@ export const joinAdrCollaboration = createServerFn({ method: "POST" })
     const updates = await pgQuery<{ id: number; update_data: string }>(
       `SELECT id, update_data FROM adr_collaboration_updates
        WHERE adr_id = $1 ORDER BY id ASC LIMIT 500`,
-      [data.adr_id]
+      [data.adr_id],
     ).then((result) => result.rows);
 
     return { snapshot, updates };
@@ -1518,7 +1721,7 @@ export const joinAdrCollaboration = createServerFn({ method: "POST" })
 export const getAdrCollaborationUpdates = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) =>
-    z.object({ adr_id: z.string().uuid(), after_id: z.number().int().min(0) }).parse(d)
+    z.object({ adr_id: z.string().uuid(), after_id: z.number().int().min(0) }).parse(d),
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
@@ -1527,7 +1730,7 @@ export const getAdrCollaborationUpdates = createServerFn({ method: "POST" })
     const result = await pgQuery<{ id: number; update_data: string }>(
       `SELECT id, update_data FROM adr_collaboration_updates
        WHERE adr_id = $1 AND id > $2 ORDER BY id ASC LIMIT 500`,
-      [data.adr_id, data.after_id]
+      [data.adr_id, data.after_id],
     );
     return result.rows ?? [];
   });
@@ -1535,7 +1738,7 @@ export const getAdrCollaborationUpdates = createServerFn({ method: "POST" })
 export const appendAdrCollaborationUpdate = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) =>
-    z.object({ adr_id: z.string().uuid(), update_data: encodedYjsUpdateSchema }).parse(d)
+    z.object({ adr_id: z.string().uuid(), update_data: encodedYjsUpdateSchema }).parse(d),
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
@@ -1545,7 +1748,7 @@ export const appendAdrCollaborationUpdate = createServerFn({ method: "POST" })
     const update = await pgOne<{ id: number }>(
       `INSERT INTO adr_collaboration_updates (adr_id, update_data, created_by)
        VALUES ($1, $2, $3) RETURNING id`,
-      [data.adr_id, data.update_data, context.userId]
+      [data.adr_id, data.update_data, context.userId],
     );
     if (!update) throw new Error("Could not save collaboration update.");
     return update;
@@ -2012,10 +2215,9 @@ export const updateAdr = createServerFn({ method: "POST" })
     );
     if (!adr) throw new Error("ADR not found");
     assertDraftAdrOwner(adr, userId);
-    const isAdmin = !!(await pgOne(
-      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'",
-      [userId],
-    ));
+    const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'", [
+      userId,
+    ]));
     const isProjectMember = !!(await pgOne(
       "SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2",
       [userId, adr.project_id],
@@ -2190,8 +2392,18 @@ export const addAdrRelationship = createServerFn({ method: "POST" })
       [data.source_adr_id, data.target_adr_id, data.rel_type, userId],
     );
     await Promise.all([
-      publishAdrCollaborationSignal(context, data.source_adr_id, "relationshipsRevision", new Date().toISOString()),
-      publishAdrCollaborationSignal(context, data.target_adr_id, "relationshipsRevision", new Date().toISOString()),
+      publishAdrCollaborationSignal(
+        context,
+        data.source_adr_id,
+        "relationshipsRevision",
+        new Date().toISOString(),
+      ),
+      publishAdrCollaborationSignal(
+        context,
+        data.target_adr_id,
+        "relationshipsRevision",
+        new Date().toISOString(),
+      ),
     ]);
     return { ok: true };
   });
@@ -2215,8 +2427,18 @@ export const removeAdrRelationship = createServerFn({ method: "POST" })
     ]);
     await pgQuery("DELETE FROM adr_relationships WHERE id = $1", [data.id]);
     await Promise.all([
-      publishAdrCollaborationSignal(context, relationship.source_adr_id, "relationshipsRevision", new Date().toISOString()),
-      publishAdrCollaborationSignal(context, relationship.target_adr_id, "relationshipsRevision", new Date().toISOString()),
+      publishAdrCollaborationSignal(
+        context,
+        relationship.source_adr_id,
+        "relationshipsRevision",
+        new Date().toISOString(),
+      ),
+      publishAdrCollaborationSignal(
+        context,
+        relationship.target_adr_id,
+        "relationshipsRevision",
+        new Date().toISOString(),
+      ),
     ]);
     return { ok: true };
   });

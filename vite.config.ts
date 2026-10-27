@@ -14,6 +14,11 @@ export default defineConfig({
       jsx: 'automatic',
       jsxDev: false,
     },
+    build: {
+      rollupOptions: {
+        external: ["simple-git"],
+      },
+    },
   },
   nitro: {
     baseURL: "/decyra",

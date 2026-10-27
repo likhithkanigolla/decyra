@@ -3,7 +3,16 @@
  * Used when publishing an ADR — the markdown is stored and committed to Git.
  */
 
-export function generateAdrMarkdown(adr: any): string {
+export function generateAdrMarkdown(adr: {
+  title?: string;
+  full_id?: string;
+  status?: string;
+  tags?: string[];
+  design_changes?: Record<string, string>;
+  major_impacts?: Record<string, string>;
+  references_data?: Record<string, string[]>;
+  [key: string]: unknown;
+}): string {
   const dc = adr.design_changes ?? {};
   const mi = adr.major_impacts ?? {};
   const refs = adr.references_data ?? {};
@@ -232,7 +241,11 @@ export function parseAdrMarkdown(markdown: string) {
   return {
     title:
       titleMatch?.[1]
-        ?.replace(/^(?:\[[^\]]+\]\s*-\s*|\[[^\]]+\]\s*|[A-Z0-9_-]+\s*-\s*)?(?:ADR-)?\d+:\s*/i, "")
+        ?.replace(/^\[?\s*[A-Za-z0-9_-]+-ADR-\d+\s*\]?\s*[:-]?\s*/i, "")
+        ?.replace(
+          /^(?:\[[^\]]+\]\s*-\s*|\[[^\]]+\]\s*:?\s*|[A-Z0-9_-]+\s*-\s*)?(?:ADR-)?\d+:?\s*/i,
+          "",
+        )
         ?.trim() ?? "",
     tags,
     context: extractMarkdownSection(content, "Context"),
@@ -261,4 +274,87 @@ export function parseAdrMarkdown(markdown: string) {
       external: referenceValues.external_references ?? referenceValues.external ?? [],
     },
   };
+}
+
+export interface ExtractedAdrIdentifier {
+  projectCode: string;
+  adrNumber: number;
+  fullId: string;
+  cleanTitle: string;
+}
+
+export type ExtractAdrResult =
+  | { success: true; data: ExtractedAdrIdentifier }
+  | { success: false; reason: string };
+
+/**
+ * Inspects a file and its markdown to validate the [Project code-ADR-XXX] format.
+ * Returns either the parsed identifier data or a specific human-readable reason why it was rejected.
+ * Prioritizes the filename if it matches the ADR identifier pattern, falling back to the markdown H1.
+ */
+export function inspectAdrIdentifier(
+  fileName: string,
+  markdown: string,
+  expectedProjectCode?: string,
+): ExtractAdrResult {
+  const pattern =
+    /(?:\[\s*([A-Za-z0-9_-]+)-ADR-(\d+)\s*\]|(?:\b)([A-Za-z0-9_-]+)-ADR-(\d+)(?:\b))/i;
+
+  const h1Match = markdown.match(/^#\s+(.+?)$/m);
+  const h1 = h1Match ? h1Match[1].trim() : "";
+
+  // Check fileName first, fallback to h1
+  let match = fileName.match(pattern);
+  if (!match) {
+    match = h1.match(pattern);
+  }
+
+  if (!match) {
+    return {
+      success: false,
+      reason: `Not an ADR file (missing [${expectedProjectCode ? expectedProjectCode.toUpperCase() : "CODE"}-ADR-XXX] identifier in filename or H1)`,
+    };
+  }
+
+  const code = (match[1] || match[3]).toUpperCase();
+  const numStr = match[2] || match[4];
+  const num = parseInt(numStr, 10);
+
+  if (expectedProjectCode && code !== expectedProjectCode.toUpperCase()) {
+    return {
+      success: false,
+      reason: `Project code '${code}' does not match current project '${expectedProjectCode.toUpperCase()}'`,
+    };
+  }
+
+  const padded = String(num).padStart(3, "0");
+  const fullId = `${code}-ADR-${padded}`;
+
+  let cleanTitle = h1
+    .replace(/^\[?\s*[A-Za-z0-9_-]+-ADR-\d+\s*\]?\s*[:-]?\s*/i, "")
+    .replace(/^title:\s*/i, "")
+    .trim();
+
+  if (!cleanTitle) {
+    cleanTitle = fullId;
+  }
+
+  return {
+    success: true,
+    data: { projectCode: code, adrNumber: num, fullId, cleanTitle },
+  };
+}
+
+/**
+ * Validates and extracts ADR identifier and clean title for a project.
+ * Checks whether the ADR follows the required format [Project code-ADR-XXX].
+ * Looks for [CODE-ADR-XXX] or CODE-ADR-XXX in the file name and the markdown H1 title.
+ */
+export function extractAdrIdentifier(
+  fileName: string,
+  markdown: string,
+  expectedProjectCode?: string,
+): ExtractedAdrIdentifier | null {
+  const res = inspectAdrIdentifier(fileName, markdown, expectedProjectCode);
+  return res.success ? res.data : null;
 }

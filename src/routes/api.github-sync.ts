@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { processGitHubWebhook } from "@/lib/api/github-sync.server";
 
 const MAX_WEBHOOK_BYTES = 5_000_000;
 
@@ -45,6 +44,7 @@ export const Route = createFileRoute("/api/github-sync")({
 
         try {
           const body = await readRequestBody(request);
+          const { processGitHubWebhook } = await import("@/lib/api/github-sync.server");
           const result = await processGitHubWebhook(
             body,
             request.headers.get("x-github-event"),
