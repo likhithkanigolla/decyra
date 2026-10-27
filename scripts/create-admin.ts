@@ -1,14 +1,11 @@
 /**
- * Bootstrap script: creates the first admin user in local PostgreSQL mode.
+ * Bootstrap script: creates the first admin user in PostgreSQL.
  *
  * Usage:
  *   npx tsx scripts/create-admin.ts
  *
  * Or with custom values:
  *   ADMIN_EMAIL=you@example.com ADMIN_PASSWORD=secret123 ADMIN_NAME="Your Name" npx tsx scripts/create-admin.ts
- *
- * This ONLY works when DATABASE_TYPE=postgres (local mode).
- * For Supabase mode, use the Supabase dashboard to create the first user.
  */
 
 import 'dotenv/config';

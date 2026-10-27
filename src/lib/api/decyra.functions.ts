@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
-import { requireFlexibleAuth } from "@/integrations/supabase/auth-flexible";
-import type { FlexibleAuthContext } from "@/integrations/supabase/auth-flexible";
+import { requireAuth, requireFlexibleAuth } from "@/integrations/database/auth-middleware";
+import type { AuthContext, FlexibleAuthContext } from "@/integrations/database/auth-middleware";
 import { z } from "zod";
 import { simpleGit } from "simple-git";
 import * as fs from "node:fs";
@@ -34,21 +34,11 @@ function assertDraftAdrOwner(adr: { status: string; author_id: string }, userId:
   }
 }
 
-async function assertDraftAdrVisible(context: FlexibleAuthContext, adrId: string) {
-  const adr = context.isDatabaseLocal
-    ? await pgOne<{ status: string; author_id: string }>(
-        "SELECT status, author_id FROM adrs WHERE id = $1",
-        [adrId],
-      )
-    : await context.supabase
-        .from("adrs")
-        .select("status, author_id")
-        .eq("id", adrId)
-        .maybeSingle()
-        .then(({ data, error }: { data: any; error: any }) => {
-          if (error) throw new Error(error.message);
-          return data;
-        });
+async function assertDraftAdrVisible(context: AuthContext, adrId: string) {
+  const adr = await pgOne<{ status: string; author_id: string }>(
+    "SELECT status, author_id FROM adrs WHERE id = $1",
+    [adrId],
+  );
 
   if (!adr) throw new Error("ADR not found.");
   assertDraftAdrOwner(adr, context.userId);
@@ -61,58 +51,24 @@ type AdrCollaborationAccess = {
 };
 
 async function assertAdrCollaborationAccess(
-  context: FlexibleAuthContext,
+  context: AuthContext,
   adrId: string
 ): Promise<AdrCollaborationAccess> {
-  const adr = context.isDatabaseLocal
-    ? await pgOne<AdrCollaborationAccess>(
-        "SELECT author_id, project_id, status FROM adrs WHERE id = $1",
-        [adrId]
-      )
-    : await context.supabase
-        .from("adrs")
-        .select("author_id, project_id, status")
-        .eq("id", adrId)
-        .maybeSingle()
-        .then(({ data, error }) => {
-          if (error) throw new Error(error.message);
-          return data;
-        });
+  const adr = await pgOne<AdrCollaborationAccess>(
+    "SELECT author_id, project_id, status FROM adrs WHERE id = $1",
+    [adrId]
+  );
 
   if (!adr) throw new Error("ADR not found.");
   assertDraftAdrOwner(adr, context.userId);
 
-  if (context.isDatabaseLocal) {
-    const [admin, membership] = await Promise.all([
-      pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [context.userId]),
-      pgOne("SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2", [
-        context.userId,
-        adr.project_id,
-      ]),
-    ]);
-    if (!admin && !membership) {
-      throw new Error("Unauthorized: You do not have access to this ADR's project.");
-    }
-    return adr;
-  }
-
-  const [{ data: admin, error: adminError }, { data: membership, error: membershipError }] =
-    await Promise.all([
-      context.supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", context.userId)
-        .eq("role", "admin")
-        .maybeSingle(),
-      context.supabase
-        .from("project_members")
-        .select("role")
-        .eq("user_id", context.userId)
-        .eq("project_id", adr.project_id)
-        .maybeSingle(),
-    ]);
-  if (adminError) throw new Error(adminError.message);
-  if (membershipError) throw new Error(membershipError.message);
+  const [admin, membership] = await Promise.all([
+    pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [context.userId]),
+    pgOne("SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2", [
+      context.userId,
+      adr.project_id,
+    ]),
+  ]);
   if (!admin && !membership) {
     throw new Error("Unauthorized: You do not have access to this ADR's project.");
   }
@@ -128,35 +84,17 @@ function makeAdrCollaborationSignal(key: string, value: string): string {
 }
 
 async function publishAdrCollaborationSignal(
-  context: FlexibleAuthContext,
+  context: AuthContext,
   adrId: string,
   key: string,
   value: string
 ) {
-  if (context.isDatabaseLocal) {
-    const room = await pgOne("SELECT adr_id FROM adr_collaboration_rooms WHERE adr_id = $1", [adrId]);
-    if (!room) return;
-    await pgQuery(
-      "INSERT INTO adr_collaboration_updates (adr_id, update_data, created_by) VALUES ($1, $2, $3)",
-      [adrId, makeAdrCollaborationSignal(key, value), context.userId]
-    );
-    return;
-  }
-
-  const { data: room, error: roomError } = await context.supabase
-    .from("adr_collaboration_rooms")
-    .select("adr_id")
-    .eq("adr_id", adrId)
-    .maybeSingle();
-  if (roomError) throw new Error(roomError.message);
+  const room = await pgOne("SELECT adr_id FROM adr_collaboration_rooms WHERE adr_id = $1", [adrId]);
   if (!room) return;
-
-  const { error } = await context.supabase.from("adr_collaboration_updates").insert({
-    adr_id: adrId,
-    update_data: makeAdrCollaborationSignal(key, value),
-    created_by: context.userId,
-  });
-  if (error) throw new Error(error.message);
+  await pgQuery(
+    "INSERT INTO adr_collaboration_updates (adr_id, update_data, created_by) VALUES ($1, $2, $3)",
+    [adrId, makeAdrCollaborationSignal(key, value), context.userId]
+  );
 }
 
 function assertRequiredAdrContent(adr: {
@@ -250,54 +188,25 @@ function resolveRepositoryAdrPath(repoDir: string, adrPath: string) {
   return realAdrPath;
 }
 
-async function assertProjectManager(context: FlexibleAuthContext, projectId: string) {
-  const { userId, supabase, isDatabaseLocal } = context;
-  if (isDatabaseLocal) {
-    const [admin, projectAdmin] = await Promise.all([
-      pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
-      pgOne(
-        "SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = 'project_admin'",
-        [projectId, userId],
-      ),
-    ]);
-    if (!admin && !projectAdmin) {
-      throw new Error("Only admins or project admins can manage project data.");
-    }
-    return;
-  }
-
-  const [{ data: admin, error: adminError }, { data: membership, error: membershipError }] =
-    await Promise.all([
-      supabase.from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle(),
-      supabase
-        .from("project_members")
-        .select("role")
-        .eq("project_id", projectId)
-        .eq("user_id", userId)
-        .eq("role", "project_admin")
-        .maybeSingle(),
-    ]);
-  if (adminError) throw new Error(adminError.message);
-  if (membershipError) throw new Error(membershipError.message);
-  if (!admin && !membership) {
+async function assertProjectManager(context: AuthContext, projectId: string) {
+  const { userId } = context;
+  const [admin, projectAdmin] = await Promise.all([
+    pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
+    pgOne(
+      "SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = 'project_admin'",
+      [projectId, userId],
+    ),
+  ]);
+  if (!admin && !projectAdmin) {
     throw new Error("Only admins or project admins can manage project data.");
   }
 }
 
-async function getGitHubSyncProject(context: FlexibleAuthContext, projectId: string) {
-  if (context.isDatabaseLocal) {
-    return pgOne<{ id: string; repo_url: string | null }>(
-      "SELECT id, repo_url FROM projects WHERE id = $1",
-      [projectId],
-    );
-  }
-  const { data: project, error } = await context.supabase
-    .from("projects")
-    .select("id, repo_url")
-    .eq("id", projectId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return project;
+async function getGitHubSyncProject(context: AuthContext, projectId: string) {
+  return pgOne<{ id: string; repo_url: string | null }>(
+    "SELECT id, repo_url FROM projects WHERE id = $1",
+    [projectId],
+  );
 }
 
 function validateGitHubRepositoryUrl(repoUrl: string | null) {
@@ -322,47 +231,23 @@ function validateGitHubRepositoryUrl(repoUrl: string | null) {
 }
 
 async function saveGitHubSyncConfiguration(
-  context: FlexibleAuthContext,
+  context: AuthContext,
   projectId: string,
   secret: string | null,
 ) {
-  if (context.isDatabaseLocal) {
-    if (secret) {
-      await pgQuery(
-        `INSERT INTO github_sync_secrets (project_id, secret)
-         VALUES ($1, $2)
-         ON CONFLICT (project_id) DO UPDATE SET secret = EXCLUDED.secret, created_at = now()`,
-        [projectId, secret],
-      );
-    }
-    await pgQuery(
-      "UPDATE projects SET github_sync_enabled = $1, github_sync_last_commit = NULL WHERE id = $2",
-      [Boolean(secret), projectId],
-    );
-    if (!secret) await pgQuery("DELETE FROM github_sync_secrets WHERE project_id = $1", [projectId]);
-    return;
-  }
-
-  const { supabase } = context;
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   if (secret) {
-    const { error } = await supabaseAdmin
-      .from("github_sync_secrets")
-      .upsert({ project_id: projectId, secret });
-    if (error) throw new Error(error.message);
+    await pgQuery(
+      `INSERT INTO github_sync_secrets (project_id, secret)
+       VALUES ($1, $2)
+       ON CONFLICT (project_id) DO UPDATE SET secret = EXCLUDED.secret, created_at = now()`,
+      [projectId, secret],
+    );
   }
-  const { error } = await supabase
-    .from("projects")
-    .update({ github_sync_enabled: Boolean(secret), github_sync_last_commit: null })
-    .eq("id", projectId);
-  if (error) throw new Error(error.message);
-  if (!secret) {
-    const { error: secretError } = await supabaseAdmin
-      .from("github_sync_secrets")
-      .delete()
-      .eq("project_id", projectId);
-    if (secretError) throw new Error(secretError.message);
-  }
+  await pgQuery(
+    "UPDATE projects SET github_sync_enabled = $1, github_sync_last_commit = NULL WHERE id = $2",
+    [Boolean(secret), projectId],
+  );
+  if (!secret) await pgQuery("DELETE FROM github_sync_secrets WHERE project_id = $1", [projectId]);
 }
 
 export const configureGitHubSync = createServerFn({ method: "POST" })
@@ -390,40 +275,27 @@ export const getMyContext = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const [profileRow, rolesRow, membershipsRow] = await Promise.all([
-        pgOne("SELECT * FROM profiles WHERE id = $1", [userId]),
-        pgQuery("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
-        pgQuery(
-          `SELECT pm.role, pm.project_id,
-                  p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.description AS proj_desc
-           FROM project_members pm
-           JOIN projects p ON p.id = pm.project_id
-           WHERE pm.user_id = $1`,
-          [userId],
-        ),
-      ]);
-      const isAdmin = (rolesRow.rows ?? []).some((r: any) => r.role === "admin");
-      const memberships = (membershipsRow.rows ?? []).map((m: any) => ({
-        role: m.role,
-        project_id: m.project_id,
-        projects: { id: m.proj_id, name: m.proj_name, code: m.proj_code, description: m.proj_desc },
-      }));
-      return { userId, profile: profileRow, isAdmin, memberships };
-    }
-
-    const [{ data: profile }, { data: roles }, { data: memberships }] = await Promise.all([
-      supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
-      supabase.from("user_roles").select("role").eq("user_id", userId),
-      supabase
-        .from("project_members")
-        .select("role, project_id, projects(id,name,code,description)")
-        .eq("user_id", userId),
+    const [profileRow, rolesRow, membershipsRow] = await Promise.all([
+      pgOne("SELECT * FROM profiles WHERE id = $1", [userId]),
+      pgQuery("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
+      pgQuery(
+        `SELECT pm.role, pm.project_id,
+                p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.description AS proj_desc
+         FROM project_members pm
+         JOIN projects p ON p.id = pm.project_id
+         WHERE pm.user_id = $1`,
+        [userId],
+      ),
     ]);
-    const isAdmin = (roles ?? []).some((r: any) => r.role === "admin");
-    return { userId, profile, isAdmin, memberships: memberships ?? [] };
+    const isAdmin = (rolesRow.rows ?? []).some((r: any) => r.role === "admin");
+    const memberships = (membershipsRow.rows ?? []).map((m: any) => ({
+      role: m.role,
+      project_id: m.project_id,
+      projects: { id: m.proj_id, name: m.proj_name, code: m.proj_code, description: m.proj_desc },
+    }));
+    return { userId, profile: profileRow, isAdmin, memberships };
   });
 
 // ─── listProjects ─────────────────────────────────────────────────────────────
@@ -432,36 +304,27 @@ export const listProjects = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const isAdminRow = await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    const isAdminRow = await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    );
+    const isAdmin = !!isAdminRow;
+
+    if (isAdmin) {
+      const result = await pgQuery("SELECT * FROM projects ORDER BY created_at DESC");
+      return result.rows;
+    } else {
+      const result = await pgQuery(
+        `SELECT p.* FROM projects p
+         JOIN project_members pm ON p.id = pm.project_id
+         WHERE pm.user_id = $1
+         ORDER BY p.created_at DESC`,
         [userId],
       );
-      const isAdmin = !!isAdminRow;
-
-      if (isAdmin) {
-        const result = await pgQuery("SELECT * FROM projects ORDER BY created_at DESC");
-        return result.rows;
-      } else {
-        const result = await pgQuery(
-          `SELECT p.* FROM projects p
-           JOIN project_members pm ON p.id = pm.project_id
-           WHERE pm.user_id = $1
-           ORDER BY p.created_at DESC`,
-          [userId],
-        );
-        return result.rows;
-      }
+      return result.rows;
     }
-
-    const { data, error } = await supabase
-      .from("projects")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) throw new Error(error.message);
-    return data;
   });
 
 // ─── createProject ────────────────────────────────────────────────────────────
@@ -490,65 +353,36 @@ export const createProject = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const roleRow = await pgOne<{ role: string }>(
-        "SELECT role FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      );
-      if (!roleRow) throw new Error("Only platform admins can create projects.");
+    const roleRow = await pgOne<{ role: string }>(
+      "SELECT role FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    );
+    if (!roleRow) throw new Error("Only platform admins can create projects.");
 
-      const project = await pgOne<any>(
-        `INSERT INTO projects (name, code, description, repo_url, branch, adr_path, git_pat, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING *`,
-        [
-          data.name,
-          data.code,
-          data.description ?? null,
-          data.repo_url || null,
-          data.branch || "main",
-          data.adr_path ?? "", // empty string allowed (= repo root)
-          data.git_pat || null,
-          userId,
-        ],
-      );
-      if (!project) throw new Error("Failed to create project");
-      delete project.git_pat;
+    const project = await pgOne<any>(
+      `INSERT INTO projects (name, code, description, repo_url, branch, adr_path, git_pat, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        data.name,
+        data.code,
+        data.description ?? null,
+        data.repo_url || null,
+        data.branch || "main",
+        data.adr_path ?? "", // empty string allowed (= repo root)
+        data.git_pat || null,
+        userId,
+      ],
+    );
+    if (!project) throw new Error("Failed to create project");
+    delete project.git_pat;
 
-      await pgQuery(
-        `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'project_admin')`,
-        [project.id, userId],
-      );
-      return project;
-    }
-
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
-      throw new Error("Only platform admins can create projects.");
-    }
-    const { data: project, error } = await supabase
-      .from("projects")
-      .insert({
-        name: data.name,
-        code: data.code,
-        description: data.description ?? null,
-        repo_url: data.repo_url || null,
-        branch: data.branch || "main",
-        adr_path: data.adr_path ?? "", // empty string = repo root
-        git_pat: data.git_pat || null,
-        created_by: userId,
-      })
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-    if (project) delete project.git_pat;
-    await supabase.from("project_members").insert({
-      project_id: project.id,
-      user_id: userId,
-      role: "project_admin",
-    });
+    await pgQuery(
+      `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'project_admin')`,
+      [project.id, userId],
+    );
     return project;
   });
 
@@ -572,75 +406,40 @@ export const updateProject = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const isAdmin = !!(await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      ));
-      const isProjectAdmin = !!(await pgOne(
-        "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
-        [userId, data.id],
-      ));
-      if (!isAdmin && !isProjectAdmin) {
-        throw new Error("Only admins or project admins can edit projects.");
-      }
-
-      const updated = await pgOne<any>(
-        `UPDATE projects SET
-           name = $1, description = $2, repo_url = $3,
-           branch = $4, adr_path = $5, git_pat = $6, required_approvals = COALESCE($7, required_approvals)
-         WHERE id = $8
-         RETURNING *`,
-        [
-          data.name,
-          data.description ?? null,
-          data.repo_url || null,
-          data.branch || "main",
-          data.adr_path || "docs/adr",
-          data.git_pat ?? null,
-          data.required_approvals ?? null,
-          data.id,
-        ],
-      );
-      if (!updated) throw new Error("Project not found");
-      delete updated.git_pat;
-      return updated;
-    }
-
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    const { data: membership } = await supabase
-      .from("project_members")
-      .select("role")
-      .eq("project_id", data.id)
-      .eq("user_id", userId)
-      .maybeSingle();
-    const isAdmin = (roles ?? []).some((r: any) => r.role === "admin");
-    const isProjectAdmin = membership?.role === "project_admin";
+    const isAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    ));
+    const isProjectAdmin = !!(await pgOne(
+      "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
+      [userId, data.id],
+    ));
     if (!isAdmin && !isProjectAdmin) {
       throw new Error("Only admins or project admins can edit projects.");
     }
 
-    const { data: project, error } = await supabase
-      .from("projects")
-      .update({
-        name: data.name,
-        description: data.description ?? null,
-        repo_url: data.repo_url || null,
-        branch: data.branch || "main",
-        adr_path: data.adr_path || "docs/adr",
-        git_pat: data.git_pat ?? null,
-        ...(data.required_approvals !== undefined
-          ? { required_approvals: data.required_approvals }
-          : {}),
-      })
-      .eq("id", data.id)
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-    if (project) delete project.git_pat;
-    return project;
+    const updated = await pgOne<any>(
+      `UPDATE projects SET
+         name = $1, description = $2, repo_url = $3,
+         branch = $4, adr_path = $5, git_pat = $6, required_approvals = COALESCE($7, required_approvals)
+       WHERE id = $8
+       RETURNING *`,
+      [
+        data.name,
+        data.description ?? null,
+        data.repo_url || null,
+        data.branch || "main",
+        data.adr_path || "docs/adr",
+        data.git_pat ?? null,
+        data.required_approvals ?? null,
+        data.id,
+      ],
+    );
+    if (!updated) throw new Error("Project not found");
+    delete updated.git_pat;
+    return updated;
   });
 
 // ─── getProject ───────────────────────────────────────────────────────────────
@@ -650,88 +449,52 @@ export const getProject = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const project = await pgOne<any>("SELECT * FROM projects WHERE id = $1", [data.id]);
-      if (!project) throw new Error("Project not found");
-      delete project.git_pat;
-
-      const [membersRow, adrsRow, myMembershipRow, rolesRow] = await Promise.all([
-        pgQuery(
-          `SELECT pm.id, pm.role, pm.user_id,
-                  pr.full_name, pr.email, pr.avatar_url
-           FROM project_members pm
-           LEFT JOIN profiles pr ON pr.id = pm.user_id
-           WHERE pm.project_id = $1`,
-          [data.id],
-        ),
-        pgQuery(
-          `SELECT id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at
-           FROM adrs WHERE project_id = $1
-             AND (status <> 'draft' OR author_id = $2)
-           ORDER BY adr_number DESC`,
-          [data.id, userId],
-        ),
-        pgOne<{ role: string }>(
-          "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2",
-          [data.id, userId],
-        ),
-        pgQuery("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
-      ]);
-
-      const members = (membersRow.rows ?? []).map((m: any) => ({
-        id: m.id,
-        role: m.role,
-        user_id: m.user_id,
-        profiles: { full_name: m.full_name, email: m.email, avatar_url: m.avatar_url },
-      }));
-      const isAdmin = (rolesRow.rows ?? []).some((r: any) => r.role === "admin");
-
-      if (!isAdmin && !myMembershipRow) {
-        throw new Error("Unauthorized: You do not have access to this project.");
-      }
-
-      return {
-        project,
-        members,
-        adrs: adrsRow.rows ?? [],
-        myRole: myMembershipRow?.role ?? null,
-        isAdmin,
-      };
-    }
-
-    const { data: project, error } = await supabase
-      .from("projects")
-      .select("*")
-      .eq("id", data.id)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
+    const project = await pgOne<any>("SELECT * FROM projects WHERE id = $1", [data.id]);
     if (!project) throw new Error("Project not found");
     delete project.git_pat;
-    const { data: members } = await supabase
-      .from("project_members")
-      .select("id, role, user_id, profiles(full_name, email, avatar_url)")
-      .eq("project_id", data.id);
-    const { data: adrs } = await supabase
-      .from("adrs")
-      .select("id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at")
-      .eq("project_id", data.id)
-      .or(`status.neq.draft,author_id.eq.${userId}`)
-      .order("adr_number", { ascending: false });
-    const { data: myMembership } = await supabase
-      .from("project_members")
-      .select("role")
-      .eq("project_id", data.id)
-      .eq("user_id", userId)
-      .maybeSingle();
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    const isAdmin = (roles ?? []).some((r: any) => r.role === "admin");
+
+    const [membersRow, adrsRow, myMembershipRow, rolesRow] = await Promise.all([
+      pgQuery(
+        `SELECT pm.id, pm.role, pm.user_id,
+                pr.full_name, pr.email, pr.avatar_url
+         FROM project_members pm
+         LEFT JOIN profiles pr ON pr.id = pm.user_id
+         WHERE pm.project_id = $1`,
+        [data.id],
+      ),
+      pgQuery(
+        `SELECT id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at
+         FROM adrs WHERE project_id = $1
+           AND (status <> 'draft' OR author_id = $2)
+         ORDER BY adr_number DESC`,
+        [data.id, userId],
+      ),
+      pgOne<{ role: string }>(
+        "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2",
+        [data.id, userId],
+      ),
+      pgQuery("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
+    ]);
+
+    const members = (membersRow.rows ?? []).map((m: any) => ({
+      id: m.id,
+      role: m.role,
+      user_id: m.user_id,
+      profiles: { full_name: m.full_name, email: m.email, avatar_url: m.avatar_url },
+    }));
+    const isAdmin = (rolesRow.rows ?? []).some((r: any) => r.role === "admin");
+
+    if (!isAdmin && !myMembershipRow) {
+      throw new Error("Unauthorized: You do not have access to this project.");
+    }
+
     return {
       project,
-      members: members ?? [],
-      adrs: adrs ?? [],
-      myRole: myMembership?.role ?? null,
+      members,
+      adrs: adrsRow.rows ?? [],
+      myRole: myMembershipRow?.role ?? null,
       isAdmin,
     };
   });
@@ -752,46 +515,17 @@ export const migrateAdrsFromRepository = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    const project = isDatabaseLocal
-      ? await pgOne<any>("SELECT * FROM projects WHERE id = $1", [data.project_id])
-      : await supabase
-          .from("projects")
-          .select("*")
-          .eq("id", data.project_id)
-          .maybeSingle()
-          .then(({ data, error }: { data: any; error: any }) => {
-            if (error) throw new Error(error.message);
-            return data;
-          });
+    const project = await pgOne<any>("SELECT * FROM projects WHERE id = $1", [data.project_id]);
     const projectRow = project;
     if (!projectRow) throw new Error("Project not found.");
 
-    const isAdmin = isDatabaseLocal
-      ? !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]))
-      : !!(await supabase
-          .from("user_roles")
-          .select("role")
-          .eq("user_id", userId)
-          .then(({ data }: { data: any[] | null }) =>
-            (data ?? []).some((role: any) => role.role === "admin"),
-          ));
-    const isProjectAdmin = isDatabaseLocal
-      ? !!(await pgOne(
-          "SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = 'project_admin'",
-          [data.project_id, userId],
-        ))
-      : !!(await supabase
-          .from("project_members")
-          .select("role")
-          .eq("project_id", data.project_id)
-          .eq("user_id", userId)
-          .maybeSingle()
-          .then(({ data, error }: { data: any; error: any }) => {
-            if (error) throw new Error(error.message);
-            return data?.role === "project_admin";
-          }));
+    const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]));
+    const isProjectAdmin = !!(await pgOne(
+      "SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = 'project_admin'",
+      [data.project_id, userId],
+    ));
     if (!isAdmin && !isProjectAdmin)
       throw new Error("Only admins or project admins can import ADRs.");
 
@@ -843,21 +577,10 @@ export const migrateAdrsFromRepository = createServerFn({ method: "POST" })
         }
 
         const normalizedTitle = title.replace(/\s+/g, " ").trim();
-        const existing = isDatabaseLocal
-          ? await pgOne<{ id: string }>(
-              "SELECT id FROM adrs WHERE project_id = $1 AND lower(title) = lower($2) LIMIT 1",
-              [data.project_id, normalizedTitle],
-            )
-          : await supabase
-              .from("adrs")
-              .select("id")
-              .eq("project_id", data.project_id)
-              .ilike("title", normalizedTitle)
-              .maybeSingle()
-              .then(({ data, error }: { data: any; error: any }) => {
-                if (error) throw new Error(error.message);
-                return data;
-              });
+        const existing = await pgOne<{ id: string }>(
+          "SELECT id FROM adrs WHERE project_id = $1 AND lower(title) = lower($2) LIMIT 1",
+          [data.project_id, normalizedTitle],
+        );
 
         if (existing) {
           skipped.push(path.basename(filePath));
@@ -898,37 +621,27 @@ export const migrateAdrsFromRepository = createServerFn({ method: "POST" })
           full_id: "PENDING",
         };
 
-        if (isDatabaseLocal) {
-          const insert = await pgOne<any>(
-            `INSERT INTO adrs
-             (project_id, title, tags, context, decision, consequences, alternatives,
-              design_changes, major_impacts, references_data, author_id)
-             VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11)
-             RETURNING *`,
-            [
-              payload.project_id,
-              payload.title,
-              payload.tags,
-              payload.context,
-              payload.decision,
-              payload.consequences,
-              payload.alternatives,
-              JSON.stringify(payload.design_changes),
-              JSON.stringify(payload.major_impacts),
-              JSON.stringify(payload.references_data),
-              payload.author_id,
-            ],
-          );
-          if (insert) imported.push(path.basename(filePath));
-        } else {
-          const { data: insert, error } = await supabase
-            .from("adrs")
-            .insert(payload)
-            .select()
-            .single();
-          if (error) throw new Error(error.message);
-          if (insert) imported.push(path.basename(filePath));
-        }
+        const insert = await pgOne<any>(
+          `INSERT INTO adrs
+           (project_id, title, tags, context, decision, consequences, alternatives,
+            design_changes, major_impacts, references_data, author_id)
+           VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11)
+           RETURNING *`,
+          [
+            payload.project_id,
+            payload.title,
+            payload.tags,
+            payload.context,
+            payload.decision,
+            payload.consequences,
+            payload.alternatives,
+            JSON.stringify(payload.design_changes),
+            JSON.stringify(payload.major_impacts),
+            JSON.stringify(payload.references_data),
+            payload.author_id,
+          ],
+        );
+        if (insert) imported.push(path.basename(filePath));
       }
 
       return {
@@ -1016,68 +729,34 @@ export const exportProjectArchive = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
     await assertProjectManager(context, data.project_id);
 
-    const project = isDatabaseLocal
-      ? await pgOne<{ code: string }>("SELECT code FROM projects WHERE id = $1", [data.project_id])
-      : await supabase
-          .from("projects")
-          .select("code")
-          .eq("id", data.project_id)
-          .maybeSingle()
-          .then(({ data: row, error }) => {
-            if (error) throw new Error(error.message);
-            return row;
-          });
+    const project = await pgOne<{ code: string }>("SELECT code FROM projects WHERE id = $1", [data.project_id]);
     if (!project) throw new Error("Project not found.");
 
-    const adrs = isDatabaseLocal
-      ? (
-          await pgQuery<any>(
-            `SELECT id, full_id, title, tags, context, decision, consequences, alternatives,
-                    design_changes, major_impacts, references_data
-             FROM adrs
-             WHERE project_id = $1 AND (status <> 'draft' OR author_id = $2)
-             ORDER BY adr_number`,
-            [data.project_id, userId],
-          )
-        ).rows
-      : await supabase
-          .from("adrs")
-          .select(
-            "id, full_id, title, tags, context, decision, consequences, alternatives, design_changes, major_impacts, references_data",
-          )
-          .eq("project_id", data.project_id)
-          .or(`status.neq.draft,author_id.eq.${userId}`)
-          .order("adr_number")
-          .then(({ data: rows, error }) => {
-            if (error) throw new Error(error.message);
-            return rows ?? [];
-          });
+    const adrs = (
+      await pgQuery<any>(
+        `SELECT id, full_id, title, tags, context, decision, consequences, alternatives,
+                design_changes, major_impacts, references_data
+         FROM adrs
+         WHERE project_id = $1 AND (status <> 'draft' OR author_id = $2)
+         ORDER BY adr_number`,
+        [data.project_id, userId],
+      )
+    ).rows;
 
     const adrIds = adrs.map((adr: any) => adr.id);
     let relationships: any[] = [];
     if (adrIds.length) {
-      if (isDatabaseLocal) {
-        const result = await pgQuery<any>(
-          `SELECT r.source_adr_id, r.target_adr_id, r.rel_type
-           FROM adr_relationships r
-           WHERE r.source_adr_id = ANY($1::uuid[])
-             AND r.target_adr_id = ANY($1::uuid[])`,
-          [adrIds],
-        );
-        relationships = result.rows ?? [];
-      } else {
-        const { data: rows, error } = await supabase
-          .from("adr_relationships")
-          .select("source_adr_id, target_adr_id, rel_type")
-          .in("source_adr_id", adrIds);
-        if (error) throw new Error(error.message);
-        relationships = (rows ?? []).filter((relationship) =>
-          adrIds.includes(relationship.target_adr_id),
-        );
-      }
+      const result = await pgQuery<any>(
+        `SELECT r.source_adr_id, r.target_adr_id, r.rel_type
+         FROM adr_relationships r
+         WHERE r.source_adr_id = ANY($1::uuid[])
+           AND r.target_adr_id = ANY($1::uuid[])`,
+        [adrIds],
+      );
+      relationships = result.rows ?? [];
     }
     const fullIdByAdrId = new Map(adrs.map((adr: any) => [adr.id, adr.full_id]));
 
@@ -1119,7 +798,7 @@ export const importProjectArchive = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
     await assertProjectManager(context, data.project_id);
 
     let archiveJson: string | undefined;
@@ -1133,24 +812,13 @@ export const importProjectArchive = createServerFn({ method: "POST" })
     }
     const archive = projectArchiveSchema.parse(data.archive);
 
-    const existingAdrs = isDatabaseLocal
-      ? (
-          await pgQuery<any>(
-            `SELECT id, full_id, title FROM adrs
-             WHERE project_id = $1 AND (status <> 'draft' OR author_id = $2)`,
-            [data.project_id, userId],
-          )
-        ).rows
-      : await supabase
-          .from("adrs")
-          .select("id, full_id, title, status, author_id")
-          .eq("project_id", data.project_id)
-          .then(({ data: rows, error }) => {
-            if (error) throw new Error(error.message);
-            return (rows ?? []).filter(
-              (adr) => adr.status !== "draft" || adr.author_id === userId,
-            );
-          });
+    const existingAdrs = (
+      await pgQuery<any>(
+        `SELECT id, full_id, title FROM adrs
+         WHERE project_id = $1 AND (status <> 'draft' OR author_id = $2)`,
+        [data.project_id, userId],
+      )
+    ).rows;
     const existingByTitle = new Map(
       existingAdrs.map((adr: any) => [adr.title.trim().toLowerCase(), adr]),
     );
@@ -1179,36 +847,26 @@ export const importProjectArchive = createServerFn({ method: "POST" })
         references_data: adr.references_data,
         author_id: userId,
       };
-      const inserted = isDatabaseLocal
-        ? await pgOne<{ id: string; full_id: string }>(
-            `INSERT INTO adrs
-             (project_id, title, tags, context, decision, consequences, alternatives,
-              design_changes, major_impacts, references_data, author_id)
-             VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11)
-             RETURNING id, full_id`,
-            [
-              values.project_id,
-              values.title,
-              values.tags,
-              values.context,
-              values.decision,
-              values.consequences,
-              values.alternatives,
-              JSON.stringify(values.design_changes),
-              JSON.stringify(values.major_impacts),
-              JSON.stringify(values.references_data),
-              values.author_id,
-            ],
-          )
-        : await supabase
-            .from("adrs")
-            .insert(values)
-            .select("id, full_id")
-            .single()
-            .then(({ data: row, error }) => {
-              if (error) throw new Error(error.message);
-              return row;
-            });
+      const inserted = await pgOne<{ id: string; full_id: string }>(
+        `INSERT INTO adrs
+         (project_id, title, tags, context, decision, consequences, alternatives,
+          design_changes, major_impacts, references_data, author_id)
+         VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11)
+         RETURNING id, full_id`,
+        [
+          values.project_id,
+          values.title,
+          values.tags,
+          values.context,
+          values.decision,
+          values.consequences,
+          values.alternatives,
+          JSON.stringify(values.design_changes),
+          JSON.stringify(values.major_impacts),
+          JSON.stringify(values.references_data),
+          values.author_id,
+        ],
+      );
       if (!inserted) throw new Error(`Could not import ADR "${adr.title}".`);
 
       imported++;
@@ -1222,27 +880,13 @@ export const importProjectArchive = createServerFn({ method: "POST" })
       const targetAdrId = idBySourceFullId.get(relationship.target_full_id);
       if (!sourceAdrId || !targetAdrId || sourceAdrId === targetAdrId) continue;
 
-      if (isDatabaseLocal) {
-        const inserted = await pgQuery<{ id: string }>(
-          `INSERT INTO adr_relationships (source_adr_id, target_adr_id, rel_type, created_by)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (source_adr_id, target_adr_id, rel_type) DO NOTHING`,
-          [sourceAdrId, targetAdrId, relationship.rel_type, userId],
-        );
-        relationshipsImported += inserted.rows.length;
-      } else {
-        const { data: inserted, error } = await supabase.from("adr_relationships").upsert(
-          {
-            source_adr_id: sourceAdrId,
-            target_adr_id: targetAdrId,
-            rel_type: relationship.rel_type,
-            created_by: userId,
-          },
-          { onConflict: "source_adr_id,target_adr_id,rel_type", ignoreDuplicates: true },
-        ).select("id").maybeSingle();
-        if (error) throw new Error(error.message);
-        if (inserted) relationshipsImported++;
-      }
+      const inserted = await pgQuery<{ id: string }>(
+        `INSERT INTO adr_relationships (source_adr_id, target_adr_id, rel_type, created_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (source_adr_id, target_adr_id, rel_type) DO NOTHING`,
+        [sourceAdrId, targetAdrId, relationship.rel_type, userId],
+      );
+      relationshipsImported += inserted.rows.length;
     }
 
     return {
@@ -1257,40 +901,21 @@ export const importProjectArchive = createServerFn({ method: "POST" })
 
 export const listProfiles = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
-  .handler(async ({ context: rawCtx }) => {
-    const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
-
-    if (isDatabaseLocal) {
-      const result = await pgQuery<{
-        id: string;
-        email: string;
-        username: string | null;
-        full_name: string;
-        is_locked: boolean;
-        role: "admin" | "member";
-      }>(`
-        SELECT p.id, p.email, p.username, p.full_name, p.is_locked,
-               COALESCE((SELECT ur.role FROM user_roles ur WHERE ur.user_id = p.id AND ur.role = 'admin' LIMIT 1), 'member') as role
-        FROM profiles p
-        ORDER BY p.full_name
-      `);
-      return result.rows;
-    }
-
-    const [{ data: profilesData }, { data: rolesData }] = await Promise.all([
-      supabase.from("profiles").select("id, email, username, full_name, is_locked"),
-      supabase.from("user_roles").select("user_id, role"),
-    ]);
-
-    const adminUserIds = new Set(
-      (rolesData ?? []).filter((r: any) => r.role === "admin").map((r: any) => r.user_id)
-    );
-
-    return (profilesData ?? []).map((p: any) => ({
-      ...p,
-      role: adminUserIds.has(p.id) ? ("admin" as const) : ("member" as const),
-    }));
+  .handler(async () => {
+    const result = await pgQuery<{
+      id: string;
+      email: string;
+      username: string | null;
+      full_name: string;
+      is_locked: boolean;
+      role: "admin" | "member";
+    }>(`
+      SELECT p.id, p.email, p.username, p.full_name, p.is_locked,
+             COALESCE((SELECT ur.role FROM user_roles ur WHERE ur.user_id = p.id AND ur.role = 'admin' LIMIT 1), 'member') as role
+      FROM profiles p
+      ORDER BY p.full_name
+    `);
+    return result.rows;
   });
 
 // ─── createUser (NEW — fixes Issue 3) ────────────────────────────────────────
@@ -1317,56 +942,22 @@ export const createUser = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    // Only platform admins can create users
-    if (isDatabaseLocal) {
-      const isAdmin = !!(await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      ));
-      if (!isAdmin) throw new Error("Only platform admins can create users.");
+    const isAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    ));
+    if (!isAdmin) throw new Error("Only platform admins can create users.");
 
-      const { createLocalUser } = await import("@/integrations/database/local-auth.server");
-      const user = await createLocalUser(
-        data.email,
-        data.password,
-        data.full_name,
-        data.role,
-        data.username,
-      );
-      return user;
-    }
-
-    // Supabase mode: use admin client to create auth user
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
-      throw new Error("Only platform admins can create users.");
-    }
-
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: newUser, error } = await supabaseAdmin.auth.admin.createUser({
-      email: data.email,
-      password: data.password,
-      user_metadata: { full_name: data.full_name, username: data.username },
-      email_confirm: true,
-    });
-    if (error) throw new Error(error.message);
-
-    // Assign role (handle_new_user trigger sets 'member' by default for non-first users)
-    if (data.role === "admin") {
-      await supabaseAdmin
-        .from("user_roles")
-        .upsert({ user_id: newUser.user.id, role: "admin" }, { onConflict: "user_id,role" });
-    }
-
-    return {
-      id: newUser.user.id,
-      email: data.email,
-      username: data.username,
-      full_name: data.full_name,
-      role: data.role,
-    };
+    const { createLocalUser } = await import("@/integrations/database/local-auth.server");
+    return createLocalUser(
+      data.email,
+      data.password,
+      data.full_name,
+      data.role,
+      data.username,
+    );
   });
 
 // ─── loginLocal (NEW — local auth endpoint) ───────────────────────────────────
@@ -1376,29 +967,19 @@ export const loginLocalFn = createServerFn({ method: "POST" })
     z.object({ identifier: z.string().min(1), password: z.string() }).parse(d),
   )
   .handler(async ({ data }) => {
-    const dbConfig = getDatabaseConfig();
-    if (!dbConfig.isLocal) {
-      throw new Error("Local login is only available in local PostgreSQL mode.");
-    }
     const { loginLocal } = await import("@/integrations/database/local-auth.server");
     return loginLocal(data.identifier, data.password);
   });
 
-// ─── lookupEmailByUsernameFn (NEW — Supabase mode lookup) ─────────────────────
+// ─── lookupEmailByUsernameFn ──────────────────────────────────────────────────
 
 export const lookupEmailByUsernameFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ username: z.string() }).parse(d))
   .handler(async ({ data }) => {
-    const dbConfig = getDatabaseConfig();
-    if (dbConfig.isLocal) {
-      throw new Error("Only used in Supabase mode.");
-    }
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: profile } = await supabaseAdmin
-      .from("profiles")
-      .select("email")
-      .eq("username", data.username.toLowerCase().trim())
-      .maybeSingle();
+    const profile = await pgOne<{ email: string }>(
+      "SELECT email FROM profiles WHERE LOWER(username) = $1",
+      [data.username.toLowerCase().trim()],
+    );
 
     if (!profile || !profile.email) {
       throw new Error("Username not found");
@@ -1406,18 +987,13 @@ export const lookupEmailByUsernameFn = createServerFn({ method: "POST" })
     return { email: profile.email };
   });
 
-// ─── signUpLocal (NEW — local auth endpoint) ───────────────────────────────────
+// ─── checkIsFirstRun / signUpLocal ───────────────────────────────────────────
 
 export const checkIsFirstRunFn = createServerFn({ method: "POST" }).handler(async () => {
-  const dbConfig = getDatabaseConfig();
-  if (dbConfig.isLocal) {
-    const { queryOne } = await import("@/integrations/database/postgres");
-    const result = await queryOne<{ count: string }>(
-      "SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'",
-    );
-    return parseInt(result?.count || "0", 10) === 0;
-  }
-  return false; // For Supabase mode, we don't expose UI signups to prevent API abuse
+  const result = await pgOne<{ count: string }>(
+    "SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'",
+  );
+  return parseInt(result?.count || "0", 10) === 0;
 });
 
 export const signUpLocalFn = createServerFn({ method: "POST" })
@@ -1432,12 +1008,7 @@ export const signUpLocalFn = createServerFn({ method: "POST" })
       .parse(d),
   )
   .handler(async ({ data }) => {
-    const dbConfig = getDatabaseConfig();
-    if (!dbConfig.isLocal) {
-      throw new Error("Local sign up is only available in local PostgreSQL mode.");
-    }
-    const { queryOne } = await import("@/integrations/database/postgres");
-    const result = await queryOne<{ count: string }>(
+    const result = await pgOne<{ count: string }>(
       "SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'",
     );
     const isFirstRun = parseInt(result?.count || "0", 10) === 0;
@@ -1518,26 +1089,12 @@ export const addProjectMember = createServerFn({ method: "POST" })
       })
       .parse(d),
   )
-  .handler(async ({ context: rawCtx, data }) => {
-    const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
-
-    if (isDatabaseLocal) {
-      await pgQuery(
-        `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)
-         ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
-        [data.project_id, data.user_id, data.role],
-      );
-      return { ok: true };
-    }
-
-    const { error } = await supabase
-      .from("project_members")
-      .upsert(
-        { project_id: data.project_id, user_id: data.user_id, role: data.role },
-        { onConflict: "project_id,user_id" },
-      );
-    if (error) throw new Error(error.message);
+  .handler(async ({ data }) => {
+    await pgQuery(
+      `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)
+       ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+      [data.project_id, data.user_id, data.role],
+    );
     return { ok: true };
   });
 
@@ -1546,17 +1103,8 @@ export const addProjectMember = createServerFn({ method: "POST" })
 export const removeProjectMember = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
-  .handler(async ({ context: rawCtx, data }) => {
-    const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
-
-    if (isDatabaseLocal) {
-      await pgQuery("DELETE FROM project_members WHERE id = $1", [data.id]);
-      return { ok: true };
-    }
-
-    const { error } = await supabase.from("project_members").delete().eq("id", data.id);
-    if (error) throw new Error(error.message);
+  .handler(async ({ data }) => {
+    await pgQuery("DELETE FROM project_members WHERE id = $1", [data.id]);
     return { ok: true };
   });
 
@@ -1567,24 +1115,14 @@ export const deleteProject = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const isAdmin = !!(await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      ));
-      if (!isAdmin) throw new Error("Only platform admins can delete projects.");
-      await pgQuery("DELETE FROM projects WHERE id = $1", [data.id]);
-      return { ok: true };
-    }
-
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
-      throw new Error("Only platform admins can delete projects.");
-    }
-    const { error } = await supabase.from("projects").delete().eq("id", data.id);
-    if (error) throw new Error(error.message);
+    const isAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    ));
+    if (!isAdmin) throw new Error("Only platform admins can delete projects.");
+    await pgQuery("DELETE FROM projects WHERE id = $1", [data.id]);
     return { ok: true };
   });
 
@@ -1595,32 +1133,21 @@ export const deleteUser = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ target_user_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
     if (data.target_user_id === userId) throw new Error("You cannot delete your own account.");
 
-    if (isDatabaseLocal) {
-      const isAdmin = !!(await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      ));
-      if (!isAdmin) throw new Error("Only platform admins can delete users.");
+    const isAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    ));
+    if (!isAdmin) throw new Error("Only platform admins can delete users.");
 
-      // Explicitly delete local_users since it lacks an ON DELETE CASCADE FK to auth.users
-      await pgQuery("DELETE FROM local_users WHERE id = $1", [data.target_user_id]);
-      // Deleting from auth.users cascades to profiles, user_roles, project_members, etc.
-      await pgQuery("DELETE FROM auth.users WHERE id = $1", [data.target_user_id]);
+    // Explicitly delete local_users since it lacks an ON DELETE CASCADE FK to auth.users
+    await pgQuery("DELETE FROM local_users WHERE id = $1", [data.target_user_id]);
+    // Deleting from auth.users cascades to profiles, user_roles, project_members, etc.
+    await pgQuery("DELETE FROM auth.users WHERE id = $1", [data.target_user_id]);
 
-      return { ok: true };
-    }
-
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
-      throw new Error("Only platform admins can delete users.");
-    }
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { error } = await supabaseAdmin.auth.admin.deleteUser(data.target_user_id);
-    if (error) throw new Error(error.message);
     return { ok: true };
   });
 
@@ -1633,44 +1160,20 @@ export const toggleUserLock = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
     if (data.target_user_id === userId) throw new Error("You cannot lock your own account.");
 
-    if (isDatabaseLocal) {
-      const isAdmin = !!(await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      ));
-      if (!isAdmin) throw new Error("Only platform admins can lock users.");
+    const isAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    ));
+    if (!isAdmin) throw new Error("Only platform admins can lock users.");
 
-      await pgQuery("UPDATE profiles SET is_locked = $1 WHERE id = $2", [
-        data.lock,
-        data.target_user_id,
-      ]);
-      return { ok: true };
-    }
-
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
-      throw new Error("Only platform admins can lock users.");
-    }
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    // In Supabase, we also want to ban the user via Admin Auth API
-    if (data.lock) {
-      // ban for 100 years
-      await supabaseAdmin.auth.admin.updateUserById(data.target_user_id, {
-        ban_duration: "876000h",
-      });
-    } else {
-      await supabaseAdmin.auth.admin.updateUserById(data.target_user_id, { ban_duration: "none" });
-    }
-    // And sync the lock status to profiles for UI
-    const { error } = await supabaseAdmin
-      .from("profiles")
-      .update({ is_locked: data.lock })
-      .eq("id", data.target_user_id);
-    if (error) throw new Error(error.message);
+    await pgQuery("UPDATE profiles SET is_locked = $1 WHERE id = $2", [
+      data.lock,
+      data.target_user_id,
+    ]);
     return { ok: true };
   });
 
@@ -1681,7 +1184,7 @@ export const generateDemoAdrFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
     const demoAdr = {
       project_id: data.project_id,
@@ -1783,37 +1286,30 @@ export const generateDemoAdrFn = createServerFn({ method: "POST" })
       },
     };
 
-    if (isDatabaseLocal) {
-      const inserted = await pgOne<{ id: string }>(
-        `INSERT INTO public.adrs (
-           project_id, adr_number, full_id, title, status, author_id, tags,
-           context, decision, consequences, alternatives,
-           design_changes, major_impacts, references_data
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14::jsonb)
-         RETURNING *`,
-        [
-          demoAdr.project_id,
-          demoAdr.adr_number,
-          demoAdr.full_id,
-          demoAdr.title,
-          demoAdr.status,
-          demoAdr.author_id,
-          demoAdr.tags,
-          demoAdr.context,
-          demoAdr.decision,
-          demoAdr.consequences,
-          demoAdr.alternatives,
-          JSON.stringify(demoAdr.design_changes),
-          JSON.stringify(demoAdr.major_impacts),
-          JSON.stringify(demoAdr.references_data),
-        ],
-      );
-      return inserted;
-    }
-
-    const { data: inserted, error } = await supabase.from("adrs").insert(demoAdr).select().single();
-
-    if (error) throw new Error(error.message);
+    const inserted = await pgOne<{ id: string }>(
+      `INSERT INTO public.adrs (
+         project_id, adr_number, full_id, title, status, author_id, tags,
+         context, decision, consequences, alternatives,
+         design_changes, major_impacts, references_data
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14::jsonb)
+       RETURNING *`,
+      [
+        demoAdr.project_id,
+        demoAdr.adr_number,
+        demoAdr.full_id,
+        demoAdr.title,
+        demoAdr.status,
+        demoAdr.author_id,
+        demoAdr.tags,
+        demoAdr.context,
+        demoAdr.decision,
+        demoAdr.consequences,
+        demoAdr.alternatives,
+        JSON.stringify(demoAdr.design_changes),
+        JSON.stringify(demoAdr.major_impacts),
+        JSON.stringify(demoAdr.references_data),
+      ],
+    );
     return inserted;
   });
 
@@ -1864,53 +1360,29 @@ export const createAdr = createServerFn({ method: "POST" })
   .handler(async ({ context: rawCtx, data }) => {
     assertRequiredAdrContent(data);
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const adr = await pgOne<any>(
-        `INSERT INTO adrs
-           (project_id, title, tags, context, decision, consequences, alternatives,
-            design_changes, major_impacts, references_data, author_id)
-         VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11)
-         RETURNING *`,
-        [
-          data.project_id,
-          data.title,
-          data.tags,
-          data.context,
-          data.decision,
-          data.consequences,
-          data.alternatives,
-          JSON.stringify(data.design_changes),
-          JSON.stringify(data.major_impacts),
-          JSON.stringify(data.references_data),
-          userId,
-        ],
-      );
-      if (!adr) throw new Error("Failed to create ADR");
-      return adr;
-    }
-
-    const { data: adr, error } = await supabase
-      .from("adrs")
-      .insert({
-        project_id: data.project_id,
-        title: data.title,
-        tags: data.tags,
-        context: data.context,
-        decision: data.decision,
-        consequences: data.consequences,
-        alternatives: data.alternatives,
-        design_changes: data.design_changes,
-        major_impacts: data.major_impacts,
-        references_data: data.references_data,
-        author_id: userId,
-        adr_number: 0,
-        full_id: "PENDING",
-      })
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
+    const adr = await pgOne<any>(
+      `INSERT INTO adrs
+         (project_id, title, tags, context, decision, consequences, alternatives,
+          design_changes, major_impacts, references_data, author_id)
+       VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11)
+       RETURNING *`,
+      [
+        data.project_id,
+        data.title,
+        data.tags,
+        data.context,
+        data.decision,
+        data.consequences,
+        data.alternatives,
+        JSON.stringify(data.design_changes),
+        JSON.stringify(data.major_impacts),
+        JSON.stringify(data.references_data),
+        userId,
+      ],
+    );
+    if (!adr) throw new Error("Failed to create ADR");
     return adr;
   });
 
@@ -1921,122 +1393,72 @@ export const getAdr = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const adr = await pgOne<any>(
-        `SELECT a.*, p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.required_approvals
-         FROM adrs a
-         JOIN projects p ON p.id = a.project_id
-         WHERE a.id = $1`,
-        [data.id],
-      );
-      if (!adr) throw new Error("ADR not found");
-      assertDraftAdrOwner(adr, userId);
-
-      // Shape to match Supabase nested format
-      const shaped = {
-        ...adr,
-        projects: {
-          id: adr.proj_id,
-          name: adr.proj_name,
-          code: adr.proj_code,
-          required_approvals: adr.required_approvals,
-        },
-      };
-
-      const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow] = await Promise.all([
-        pgQuery(
-          `SELECT ap.*, pr.full_name, pr.email
-           FROM approvals ap LEFT JOIN profiles pr ON pr.id = ap.user_id
-           WHERE ap.adr_id = $1`,
-          [data.id],
-        ),
-        pgQuery(
-          `SELECT c.*, pr.full_name, pr.email
-           FROM comments c LEFT JOIN profiles pr ON pr.id = c.user_id
-           WHERE c.adr_id = $1 ORDER BY c.created_at`,
-          [data.id],
-        ),
-        pgQuery(
-          `SELECT pv.*, pr.full_name, pr.email
-           FROM published_versions pv LEFT JOIN profiles pr ON pr.id = pv.published_by
-           WHERE pv.adr_id = $1 ORDER BY pv.version_number DESC`,
-          [data.id],
-        ),
-        pgQuery("SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2", [
-          userId,
-          adr.proj_id,
-        ]),
-        pgQuery("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
-      ]);
-
-      const shapeWithProfiles = (rows: any[]) =>
-        rows.map((r) => ({ ...r, profiles: { full_name: r.full_name, email: r.email } }));
-
-      const isAdmin = (adminRow.rows?.length ?? 0) > 0;
-      const myRole = roleRow.rows?.[0]?.role ?? null;
-
-      if (!isAdmin && !myRole) {
-        throw new Error("Unauthorized: You do not have access to this ADR's project.");
-      }
-
-      return {
-        adr: shaped,
-        approvals: shapeWithProfiles(approvalsRow.rows ?? []),
-        comments: shapeWithProfiles(commentsRow.rows ?? []),
-        publishedVersions: shapeWithProfiles(versionsRow.rows ?? []),
-        isAdmin,
-        myRole,
-      };
-    }
-
-    const { data: adr, error } = await supabase
-      .from("adrs")
-      .select("*, projects(id, name, code, required_approvals)")
-      .eq("id", data.id)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
+    const adr = await pgOne<any>(
+      `SELECT a.*, p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.required_approvals
+       FROM adrs a
+       JOIN projects p ON p.id = a.project_id
+       WHERE a.id = $1`,
+      [data.id],
+    );
     if (!adr) throw new Error("ADR not found");
     assertDraftAdrOwner(adr, userId);
-    const [
-      { data: approvals },
-      { data: comments },
-      { data: versions },
-      { data: member },
-      { data: adminRole },
-    ] = await Promise.all([
-      supabase.from("approvals").select("*, profiles(full_name, email)").eq("adr_id", data.id),
-      supabase
-        .from("comments")
-        .select("*, profiles(full_name, email)")
-        .eq("adr_id", data.id)
-        .order("created_at"),
-      supabase
-        .from("published_versions")
-        .select("*, profiles(full_name, email)")
-        .eq("adr_id", data.id)
-        .order("version_number", { ascending: false }),
-      supabase
-        .from("project_members")
-        .select("role")
-        .eq("user_id", userId)
-        .eq("project_id", adr.project_id)
-        .maybeSingle(),
-      supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", userId)
-        .eq("role", "admin")
-        .maybeSingle(),
+
+    // Shape to match nested format
+    const shaped = {
+      ...adr,
+      projects: {
+        id: adr.proj_id,
+        name: adr.proj_name,
+        code: adr.proj_code,
+        required_approvals: adr.required_approvals,
+      },
+    };
+
+    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow] = await Promise.all([
+      pgQuery(
+        `SELECT ap.*, pr.full_name, pr.email
+         FROM approvals ap LEFT JOIN profiles pr ON pr.id = ap.user_id
+         WHERE ap.adr_id = $1`,
+        [data.id],
+      ),
+      pgQuery(
+        `SELECT c.*, pr.full_name, pr.email
+         FROM comments c LEFT JOIN profiles pr ON pr.id = c.user_id
+         WHERE c.adr_id = $1 ORDER BY c.created_at`,
+        [data.id],
+      ),
+      pgQuery(
+        `SELECT pv.*, pr.full_name, pr.email
+         FROM published_versions pv LEFT JOIN profiles pr ON pr.id = pv.published_by
+         WHERE pv.adr_id = $1 ORDER BY pv.version_number DESC`,
+        [data.id],
+      ),
+      pgQuery("SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2", [
+        userId,
+        adr.proj_id,
+      ]),
+      pgQuery("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
     ]);
+
+    const shapeWithProfiles = (rows: any[]) =>
+      rows.map((r) => ({ ...r, profiles: { full_name: r.full_name, email: r.email } }));
+
+    const isAdmin = (adminRow.rows?.length ?? 0) > 0;
+    const myRole = roleRow.rows?.[0]?.role ?? null;
+
+    if (!isAdmin && !myRole) {
+      throw new Error("Unauthorized: You do not have access to this ADR's project.");
+    }
+
     return {
-      adr,
-      approvals: approvals ?? [],
-      comments: comments ?? [],
-      publishedVersions: versions ?? [],
-      isAdmin: !!adminRole,
-      myRole: member?.role ?? null,
+      adr: shaped,
+      approvals: shapeWithProfiles(approvalsRow.rows ?? []),
+      comments: shapeWithProfiles(commentsRow.rows ?? []),
+      publishedVersions: shapeWithProfiles(versionsRow.rows ?? []),
+      isAdmin,
+      myRole,
     };
   });
 
@@ -2067,61 +1489,28 @@ export const joinAdrCollaboration = createServerFn({ method: "POST" })
     await assertAdrCollaborationAccess(context, data.adr_id);
     decodeYjsUpdate(data.initial_snapshot);
 
-    let snapshot: string | null = null;
-    if (context.isDatabaseLocal) {
-      const inserted = await pgOne<{ snapshot: string }>(
-        `INSERT INTO adr_collaboration_rooms (adr_id, snapshot, created_by)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (adr_id) DO NOTHING
-         RETURNING snapshot`,
-        [data.adr_id, data.initial_snapshot, context.userId]
-      );
-      snapshot =
-        inserted?.snapshot ??
-        (await pgOne<{ snapshot: string }>(
-          "SELECT snapshot FROM adr_collaboration_rooms WHERE adr_id = $1",
-          [data.adr_id]
-        ))?.snapshot ??
-        null;
-    } else {
-      const { data: inserted, error: insertError } = await context.supabase
-        .from("adr_collaboration_rooms")
-        .upsert(
-          { adr_id: data.adr_id, snapshot: data.initial_snapshot, created_by: context.userId },
-          { onConflict: "adr_id", ignoreDuplicates: true }
-        )
-        .select("snapshot")
-        .maybeSingle();
-      if (insertError) throw new Error(insertError.message);
-      snapshot = inserted?.snapshot ?? null;
-      if (!snapshot) {
-        const { data: existing, error: readError } = await context.supabase
-          .from("adr_collaboration_rooms")
-          .select("snapshot")
-          .eq("adr_id", data.adr_id)
-          .maybeSingle();
-        if (readError) throw new Error(readError.message);
-        snapshot = existing?.snapshot ?? null;
-      }
-    }
+    const inserted = await pgOne<{ snapshot: string }>(
+      `INSERT INTO adr_collaboration_rooms (adr_id, snapshot, created_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (adr_id) DO NOTHING
+       RETURNING snapshot`,
+      [data.adr_id, data.initial_snapshot, context.userId]
+    );
+    const snapshot =
+      inserted?.snapshot ??
+      (await pgOne<{ snapshot: string }>(
+        "SELECT snapshot FROM adr_collaboration_rooms WHERE adr_id = $1",
+        [data.adr_id]
+      ))?.snapshot ??
+      null;
+
     if (!snapshot) throw new Error("Could not initialize ADR collaboration.");
 
-    const updates = context.isDatabaseLocal
-      ? await pgQuery<{ id: number; update_data: string }>(
-          `SELECT id, update_data FROM adr_collaboration_updates
-           WHERE adr_id = $1 ORDER BY id ASC LIMIT 500`,
-          [data.adr_id]
-        ).then((result) => result.rows)
-      : await context.supabase
-          .from("adr_collaboration_updates")
-          .select("id, update_data")
-          .eq("adr_id", data.adr_id)
-          .order("id", { ascending: true })
-          .limit(500)
-          .then(({ data: rows, error }) => {
-            if (error) throw new Error(error.message);
-            return rows ?? [];
-          });
+    const updates = await pgQuery<{ id: number; update_data: string }>(
+      `SELECT id, update_data FROM adr_collaboration_updates
+       WHERE adr_id = $1 ORDER BY id ASC LIMIT 500`,
+      [data.adr_id]
+    ).then((result) => result.rows);
 
     return { snapshot, updates };
   });
@@ -2135,24 +1524,12 @@ export const getAdrCollaborationUpdates = createServerFn({ method: "POST" })
     const context = ctx(rawCtx);
     await assertAdrCollaborationAccess(context, data.adr_id);
 
-    if (context.isDatabaseLocal) {
-      const result = await pgQuery<{ id: number; update_data: string }>(
-        `SELECT id, update_data FROM adr_collaboration_updates
-         WHERE adr_id = $1 AND id > $2 ORDER BY id ASC LIMIT 500`,
-        [data.adr_id, data.after_id]
-      );
-      return result.rows ?? [];
-    }
-
-    const { data: updates, error } = await context.supabase
-      .from("adr_collaboration_updates")
-      .select("id, update_data")
-      .eq("adr_id", data.adr_id)
-      .gt("id", data.after_id)
-      .order("id", { ascending: true })
-      .limit(500);
-    if (error) throw new Error(error.message);
-    return updates ?? [];
+    const result = await pgQuery<{ id: number; update_data: string }>(
+      `SELECT id, update_data FROM adr_collaboration_updates
+       WHERE adr_id = $1 AND id > $2 ORDER BY id ASC LIMIT 500`,
+      [data.adr_id, data.after_id]
+    );
+    return result.rows ?? [];
   });
 
 export const appendAdrCollaborationUpdate = createServerFn({ method: "POST" })
@@ -2165,22 +1542,12 @@ export const appendAdrCollaborationUpdate = createServerFn({ method: "POST" })
     await assertAdrCollaborationAccess(context, data.adr_id);
     decodeYjsUpdate(data.update_data);
 
-    if (context.isDatabaseLocal) {
-      const update = await pgOne<{ id: number }>(
-        `INSERT INTO adr_collaboration_updates (adr_id, update_data, created_by)
-         VALUES ($1, $2, $3) RETURNING id`,
-        [data.adr_id, data.update_data, context.userId]
-      );
-      if (!update) throw new Error("Could not save collaboration update.");
-      return update;
-    }
-
-    const { data: update, error } = await context.supabase
-      .from("adr_collaboration_updates")
-      .insert({ adr_id: data.adr_id, update_data: data.update_data, created_by: context.userId })
-      .select("id")
-      .single();
-    if (error) throw new Error(error.message);
+    const update = await pgOne<{ id: number }>(
+      `INSERT INTO adr_collaboration_updates (adr_id, update_data, created_by)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [data.adr_id, data.update_data, context.userId]
+    );
+    if (!update) throw new Error("Could not save collaboration update.");
     return update;
   });
 
@@ -2191,78 +1558,39 @@ export const deleteAdr = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      // Only allow deletion of draft ADRs
-      const adr = await pgOne<{ status: string; project_id: string }>(
-        "SELECT status, project_id FROM adrs WHERE id = $1",
-        [data.id],
-      );
-      if (!adr) throw new Error("ADR not found.");
-      if (adr.status !== "draft") throw new Error("Only draft ADRs can be deleted.");
-
-      // Prevent deletion if any published versions exist — only a never-published draft can be removed
-      const pvCount = await pgOne<{ count: string }>(
-        "SELECT COUNT(*) FROM published_versions WHERE adr_id = $1",
-        [data.id],
-      );
-      if (parseInt(pvCount?.count ?? "0", 10) > 0) {
-        throw new Error(
-          "This ADR has published versions and cannot be deleted. You can supersede it instead.",
-        );
-      }
-
-      const isAdmin = !!(await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      ));
-      const isProjectAdmin = !!(await pgOne(
-        "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
-        [userId, adr.project_id],
-      ));
-      if (!isAdmin && !isProjectAdmin)
-        throw new Error("Only admins or project admins can delete ADRs.");
-
-      await pgQuery("DELETE FROM adrs WHERE id = $1", [data.id]);
-      return { ok: true, project_id: adr.project_id };
-    }
-
-    // Supabase mode
-    const { data: adr, error: fetchErr } = await supabase
-      .from("adrs")
-      .select("status, project_id")
-      .eq("id", data.id)
-      .maybeSingle();
-    if (fetchErr) throw new Error(fetchErr.message);
+    // Only allow deletion of draft ADRs
+    const adr = await pgOne<{ status: string; project_id: string }>(
+      "SELECT status, project_id FROM adrs WHERE id = $1",
+      [data.id],
+    );
     if (!adr) throw new Error("ADR not found.");
     if (adr.status !== "draft") throw new Error("Only draft ADRs can be deleted.");
 
-    // Prevent deletion if any published versions exist
-    const { count: pvCount } = await supabase
-      .from("published_versions")
-      .select("*", { count: "exact", head: true })
-      .eq("adr_id", data.id);
-    if ((pvCount ?? 0) > 0) {
+    // Prevent deletion if any published versions exist — only a never-published draft can be removed
+    const pvCount = await pgOne<{ count: string }>(
+      "SELECT COUNT(*) FROM published_versions WHERE adr_id = $1",
+      [data.id],
+    );
+    if (parseInt(pvCount?.count ?? "0", 10) > 0) {
       throw new Error(
         "This ADR has published versions and cannot be deleted. You can supersede it instead.",
       );
     }
 
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    const { data: membership } = await supabase
-      .from("project_members")
-      .select("role")
-      .eq("project_id", adr.project_id)
-      .eq("user_id", userId)
-      .maybeSingle();
-    const isAdmin = (roles ?? []).some((r: any) => r.role === "admin");
-    const isProjectAdmin = membership?.role === "project_admin";
+    const isAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    ));
+    const isProjectAdmin = !!(await pgOne(
+      "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2 AND role = 'project_admin'",
+      [userId, adr.project_id],
+    ));
     if (!isAdmin && !isProjectAdmin)
       throw new Error("Only admins or project admins can delete ADRs.");
 
-    const { error } = await supabase.from("adrs").delete().eq("id", data.id);
-    if (error) throw new Error(error.message);
+    await pgQuery("DELETE FROM adrs WHERE id = $1", [data.id]);
     return { ok: true, project_id: adr.project_id };
   });
 
@@ -2280,71 +1608,28 @@ export const updateAdrStatus = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    const adr = isDatabaseLocal
-      ? await pgOne<{ status: string; author_id: string }>(
-          "SELECT status, author_id FROM adrs WHERE id = $1",
-          [data.id],
-        )
-      : await supabase
-          .from("adrs")
-          .select("status, author_id")
-          .eq("id", data.id)
-          .maybeSingle()
-          .then(({ data: row, error }) => {
-            if (error) throw new Error(error.message);
-            return row;
-          });
+    const adr = await pgOne<{ status: string; author_id: string }>(
+      "SELECT status, author_id FROM adrs WHERE id = $1",
+      [data.id],
+    );
     if (!adr) throw new Error("ADR not found.");
     assertDraftAdrOwner(adr, userId);
 
     if (data.status === "approved") {
-      if (isDatabaseLocal) {
-        const adminApproveRow = await pgOne(
-          `SELECT 1 FROM approvals a
-           JOIN user_roles ur ON ur.user_id = a.user_id
-           WHERE a.adr_id = $1 AND a.decision = 'approve' AND ur.role = 'admin'`,
-          [data.id],
-        );
-        if (!adminApproveRow) {
-          throw new Error("Final Root Admin Approval is mandatory before an ADR can be approved.");
-        }
-      } else {
-        const { data: approvals, error: appErr } = await supabase
-          .from("approvals")
-          .select("user_id")
-          .eq("adr_id", data.id)
-          .eq("decision", "approve");
-        if (appErr) throw new Error(appErr.message);
-
-        if (!approvals || approvals.length === 0) {
-          throw new Error("Final Root Admin Approval is mandatory before an ADR can be approved.");
-        }
-
-        const userIds = approvals.map((a) => a.user_id);
-        const { data: roles, error: rolesErr } = await supabase
-          .from("user_roles")
-          .select("role")
-          .in("user_id", userIds)
-          .eq("role", "admin")
-          .limit(1);
-
-        if (rolesErr) throw new Error(rolesErr.message);
-        if (!roles || roles.length === 0) {
-          throw new Error("Final Root Admin Approval is mandatory before an ADR can be approved.");
-        }
+      const adminApproveRow = await pgOne(
+        `SELECT 1 FROM approvals a
+         JOIN user_roles ur ON ur.user_id = a.user_id
+         WHERE a.adr_id = $1 AND a.decision = 'approve' AND ur.role = 'admin'`,
+        [data.id],
+      );
+      if (!adminApproveRow) {
+        throw new Error("Final Root Admin Approval is mandatory before an ADR can be approved.");
       }
     }
 
-    if (isDatabaseLocal) {
-      await pgQuery("UPDATE adrs SET status = $1 WHERE id = $2", [data.status, data.id]);
-      await publishAdrCollaborationSignal(context, data.id, "status", data.status);
-      return { ok: true };
-    }
-
-    const { error } = await supabase.from("adrs").update({ status: data.status }).eq("id", data.id);
-    if (error) throw new Error(error.message);
+    await pgQuery("UPDATE adrs SET status = $1 WHERE id = $2", [data.status, data.id]);
     await publishAdrCollaborationSignal(context, data.id, "status", data.status);
     return { ok: true };
   });
@@ -2364,30 +1649,16 @@ export const approveAdr = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
     await assertDraftAdrVisible(context, data.adr_id);
 
-    if (isDatabaseLocal) {
-      await pgQuery(
-        `INSERT INTO approvals (adr_id, user_id, decision, note)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (adr_id, user_id) DO UPDATE
-           SET decision = EXCLUDED.decision, note = EXCLUDED.note`,
-        [data.adr_id, userId, data.decision, data.note ?? null],
-      );
-      return { ok: true };
-    }
-
-    const { error } = await supabase.from("approvals").upsert(
-      {
-        adr_id: data.adr_id,
-        user_id: userId,
-        decision: data.decision,
-        note: data.note ?? null,
-      },
-      { onConflict: "adr_id,user_id" },
+    await pgQuery(
+      `INSERT INTO approvals (adr_id, user_id, decision, note)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (adr_id, user_id) DO UPDATE
+         SET decision = EXCLUDED.decision, note = EXCLUDED.note`,
+      [data.adr_id, userId, data.decision, data.note ?? null],
     );
-    if (error) throw new Error(error.message);
     return { ok: true };
   });
 
@@ -2405,22 +1676,14 @@ export const addComment = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
     await assertDraftAdrVisible(context, data.adr_id);
 
-    if (isDatabaseLocal) {
-      await pgQuery("INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)", [
-        data.adr_id,
-        userId,
-        data.body,
-      ]);
-      return { ok: true };
-    }
-
-    const { error } = await supabase
-      .from("comments")
-      .insert({ adr_id: data.adr_id, user_id: userId, body: data.body });
-    if (error) throw new Error(error.message);
+    await pgQuery("INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)", [
+      data.adr_id,
+      userId,
+      data.body,
+    ]);
     return { ok: true };
   });
 
@@ -2430,74 +1693,52 @@ export const dashboardStats = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .handler(async ({ context: rawCtx }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const isAdminRow = await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      );
-      const isAdmin = !!isAdminRow;
+    const isAdminRow = await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    );
+    const isAdmin = !!isAdminRow;
 
-      let adrsRow, projectsRow;
+    let adrsRow, projectsRow;
 
-      if (isAdmin) {
-        [adrsRow, projectsRow] = await Promise.all([
-          pgQuery(
-            `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
-                    p.name AS proj_name, p.code AS proj_code
-             FROM adrs a JOIN projects p ON p.id = a.project_id
-             WHERE (a.status <> 'draft' OR a.author_id = $1)
-             ORDER BY a.updated_at DESC LIMIT 20`,
-            [userId],
-          ),
-          pgQuery("SELECT id, name, code FROM projects"),
-        ]);
-      } else {
-        [adrsRow, projectsRow] = await Promise.all([
-          pgQuery(
-            `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
-                    p.name AS proj_name, p.code AS proj_code
-             FROM adrs a 
-             JOIN projects p ON p.id = a.project_id
-             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
-             WHERE (a.status <> 'draft' OR a.author_id = $2)
-             ORDER BY a.updated_at DESC LIMIT 20`,
-            [userId, userId],
-          ),
-          pgQuery(
-            `SELECT p.id, p.name, p.code FROM projects p
-             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1`,
-            [userId],
-          ),
-        ]);
-      }
-
-      const adrs = (adrsRow.rows ?? []).map((a: any) => ({
-        ...a,
-        projects: { name: a.proj_name, code: a.proj_code },
-      }));
-      const counts = {
-        total: 0,
-        draft: 0,
-        under_review: 0,
-        approved: 0,
-        published: 0,
-        superseded: 0,
-      };
-      adrs.forEach((a: any) => {
-        counts.total++;
-        if (a.status in counts) counts[a.status as keyof typeof counts]++;
-      });
-      return { recent: adrs, counts, projectsCount: (projectsRow.rows ?? []).length };
+    if (isAdmin) {
+      [adrsRow, projectsRow] = await Promise.all([
+        pgQuery(
+          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
+                  p.name AS proj_name, p.code AS proj_code
+           FROM adrs a JOIN projects p ON p.id = a.project_id
+           WHERE (a.status <> 'draft' OR a.author_id = $1)
+           ORDER BY a.updated_at DESC LIMIT 20`,
+          [userId],
+        ),
+        pgQuery("SELECT id, name, code FROM projects"),
+      ]);
+    } else {
+      [adrsRow, projectsRow] = await Promise.all([
+        pgQuery(
+          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
+                  p.name AS proj_name, p.code AS proj_code
+           FROM adrs a 
+           JOIN projects p ON p.id = a.project_id
+           JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
+           WHERE (a.status <> 'draft' OR a.author_id = $2)
+           ORDER BY a.updated_at DESC LIMIT 20`,
+          [userId, userId],
+        ),
+        pgQuery(
+          `SELECT p.id, p.name, p.code FROM projects p
+           JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1`,
+          [userId],
+        ),
+      ]);
     }
 
-    const { data: adrs } = await supabase
-      .from("adrs")
-      .select("id, status, full_id, title, updated_at, project_id, projects(name, code)")
-      .or(`status.neq.draft,author_id.eq.${userId}`)
-      .order("updated_at", { ascending: false })
-      .limit(20);
+    const adrs = (adrsRow.rows ?? []).map((a: any) => ({
+      ...a,
+      projects: { name: a.proj_name, code: a.proj_code },
+    }));
     const counts = {
       total: 0,
       draft: 0,
@@ -2506,12 +1747,11 @@ export const dashboardStats = createServerFn({ method: "POST" })
       published: 0,
       superseded: 0,
     };
-    (adrs ?? []).forEach((a: any) => {
+    adrs.forEach((a: any) => {
       counts.total++;
-      counts[a.status as keyof typeof counts]++;
+      if (a.status in counts) counts[a.status as keyof typeof counts]++;
     });
-    const { data: projects } = await supabase.from("projects").select("id, name, code");
-    return { recent: adrs ?? [], counts, projectsCount: (projects ?? []).length };
+    return { recent: adrs, counts, projectsCount: (projectsRow.rows ?? []).length };
   });
 
 // ─── updateUser (admin: edit role / name / username) ──────────────────────────
@@ -2537,7 +1777,7 @@ export const updateUser = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
     const normalizedUsername =
       data.username === undefined
@@ -2546,84 +1786,55 @@ export const updateUser = createServerFn({ method: "POST" })
           ? data.username.toLowerCase().trim()
           : null;
 
-    if (isDatabaseLocal) {
-      const isAdmin = !!(await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      ));
-      if (!isAdmin) throw new Error("Only platform admins can edit users.");
+    const isAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    ));
+    if (!isAdmin) throw new Error("Only platform admins can edit users.");
 
-      if (normalizedUsername) {
-        const existing = await pgOne(
-          `SELECT 1 FROM profiles WHERE lower(username) = $1 AND id <> $2
-           UNION ALL
-           SELECT 1 FROM local_users WHERE lower(username) = $1 AND id <> $2
-           LIMIT 1`,
-          [normalizedUsername, data.user_id],
-        );
-        if (existing) {
-          throw new Error("Username is already taken.");
-        }
+    if (normalizedUsername) {
+      const existing = await pgOne(
+        `SELECT 1 FROM profiles WHERE lower(username) = $1 AND id <> $2
+         UNION ALL
+         SELECT 1 FROM local_users WHERE lower(username) = $1 AND id <> $2
+         LIMIT 1`,
+        [normalizedUsername, data.user_id],
+      );
+      if (existing) {
+        throw new Error("Username is already taken.");
       }
-
-      if (data.full_name) {
-        await pgQuery("UPDATE profiles SET full_name = $1 WHERE id = $2", [
-          data.full_name,
-          data.user_id,
-        ]);
-        await pgQuery("UPDATE local_users SET full_name = $1 WHERE id = $2", [
-          data.full_name,
-          data.user_id,
-        ]);
-      }
-      if (normalizedUsername !== undefined) {
-        await pgQuery("UPDATE profiles SET username = $1 WHERE id = $2", [
-          normalizedUsername,
-          data.user_id,
-        ]);
-        await pgQuery("UPDATE local_users SET username = $1 WHERE id = $2", [
-          normalizedUsername,
-          data.user_id,
-        ]);
-      }
-      if (data.role) {
-        // Replace all platform roles for this user
-        await pgQuery("DELETE FROM user_roles WHERE user_id = $1 AND role IN ('admin','member')", [
-          data.user_id,
-        ]);
-        await pgQuery("INSERT INTO user_roles (user_id, role) VALUES ($1, $2)", [
-          data.user_id,
-          data.role,
-        ]);
-        await pgQuery("UPDATE local_users SET role = $1 WHERE id = $2", [data.role, data.user_id]);
-      }
-      return { ok: true };
     }
 
-    const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-    if (!(roles ?? []).some((r: any) => r.role === "admin")) {
-      throw new Error("Only platform admins can edit users.");
+    if (data.full_name) {
+      await pgQuery("UPDATE profiles SET full_name = $1 WHERE id = $2", [
+        data.full_name,
+        data.user_id,
+      ]);
+      await pgQuery("UPDATE local_users SET full_name = $1 WHERE id = $2", [
+        data.full_name,
+        data.user_id,
+      ]);
     }
-
-    const updates: Record<string, any> = {};
-    if (data.full_name) updates.full_name = data.full_name;
-    if (normalizedUsername !== undefined) updates.username = normalizedUsername;
-
-    if (Object.keys(updates).length > 0) {
-      const { error } = await supabase.from("profiles").update(updates).eq("id", data.user_id);
-      if (error) {
-        if (error.code === "23505") throw new Error("Username is already taken.");
-        throw new Error(error.message);
-      }
+    if (normalizedUsername !== undefined) {
+      await pgQuery("UPDATE profiles SET username = $1 WHERE id = $2", [
+        normalizedUsername,
+        data.user_id,
+      ]);
+      await pgQuery("UPDATE local_users SET username = $1 WHERE id = $2", [
+        normalizedUsername,
+        data.user_id,
+      ]);
     }
     if (data.role) {
-      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-      await supabaseAdmin
-        .from("user_roles")
-        .delete()
-        .eq("user_id", data.user_id)
-        .in("role", ["admin", "member"]);
-      await supabaseAdmin.from("user_roles").insert({ user_id: data.user_id, role: data.role });
+      // Replace all platform roles for this user
+      await pgQuery("DELETE FROM user_roles WHERE user_id = $1 AND role IN ('admin','member')", [
+        data.user_id,
+      ]);
+      await pgQuery("INSERT INTO user_roles (user_id, role) VALUES ($1, $2)", [
+        data.user_id,
+        data.role,
+      ]);
+      await pgQuery("UPDATE local_users SET role = $1 WHERE id = $2", [data.role, data.user_id]);
     }
     return { ok: true };
   });
@@ -2650,63 +1861,41 @@ export const updateProfile = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
     const username =
       data.username === undefined ? undefined : (data.username?.toLowerCase() ?? null);
 
-    if (isDatabaseLocal) {
-      if (username) {
-        const existing = await pgOne(
-          `SELECT 1 FROM profiles WHERE lower(username) = $1 AND id <> $2
-           UNION ALL
-           SELECT 1 FROM local_users WHERE lower(username) = $1 AND id <> $2
-           LIMIT 1`,
-          [username, userId],
-        );
-        if (existing) throw new Error("That username is already in use.");
-      }
-      if (username === undefined) {
-        await pgQuery("UPDATE profiles SET full_name = $1, avatar_url = $2 WHERE id = $3", [
-          data.full_name,
-          data.avatar_url || null,
-          userId,
-        ]);
-        await pgQuery("UPDATE local_users SET full_name = $1 WHERE id = $2", [
-          data.full_name,
-          userId,
-        ]);
-      } else {
-        await pgQuery(
-          "UPDATE profiles SET full_name = $1, username = $2, avatar_url = $3 WHERE id = $4",
-          [data.full_name, username, data.avatar_url || null, userId],
-        );
-        await pgQuery("UPDATE local_users SET full_name = $1, username = $2 WHERE id = $3", [
-          data.full_name,
-          username,
-          userId,
-        ]);
-      }
-      return { ok: true };
-    }
-
     if (username) {
-      const { data: existing, error: lookupError } = await supabase
-        .from("profiles")
-        .select("id")
-        .eq("username", username)
-        .neq("id", userId)
-        .maybeSingle();
-      if (lookupError) throw new Error(lookupError.message);
+      const existing = await pgOne(
+        `SELECT 1 FROM profiles WHERE lower(username) = $1 AND id <> $2
+         UNION ALL
+         SELECT 1 FROM local_users WHERE lower(username) = $1 AND id <> $2
+         LIMIT 1`,
+        [username, userId],
+      );
       if (existing) throw new Error("That username is already in use.");
     }
-
-    const updates: { full_name: string; avatar_url: string | null; username?: string | null } = {
-      full_name: data.full_name,
-      avatar_url: data.avatar_url || null,
-    };
-    if (username !== undefined) updates.username = username;
-    const { error } = await supabase.from("profiles").update(updates).eq("id", userId);
-    if (error) throw new Error(error.message);
+    if (username === undefined) {
+      await pgQuery("UPDATE profiles SET full_name = $1, avatar_url = $2 WHERE id = $3", [
+        data.full_name,
+        data.avatar_url || null,
+        userId,
+      ]);
+      await pgQuery("UPDATE local_users SET full_name = $1 WHERE id = $2", [
+        data.full_name,
+        userId,
+      ]);
+    } else {
+      await pgQuery(
+        "UPDATE profiles SET full_name = $1, username = $2, avatar_url = $3 WHERE id = $4",
+        [data.full_name, username, data.avatar_url || null, userId],
+      );
+      await pgQuery("UPDATE local_users SET full_name = $1, username = $2 WHERE id = $3", [
+        data.full_name,
+        username,
+        userId,
+      ]);
+    }
     return { ok: true };
   });
 
@@ -2724,11 +1913,7 @@ export const changePassword = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId, isDatabaseLocal } = context;
-
-    if (!isDatabaseLocal) {
-      throw new Error("Use Supabase account settings to change your password.");
-    }
+    const { userId } = context;
 
     const user = await pgOne<{ password_hash: string; email: string }>(
       "SELECT password_hash, email FROM local_users WHERE id = $1",
@@ -2773,11 +1958,7 @@ export const adminResetPassword = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId, isDatabaseLocal, supabase } = context;
-
-    if (!isDatabaseLocal) {
-      throw new Error("Use Supabase admin panel to manage passwords.");
-    }
+    const { userId } = context;
 
     const isAdmin = !!(await pgOne(
       "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
@@ -2822,96 +2003,62 @@ export const updateAdr = createServerFn({ method: "POST" })
   .validator((d: unknown) => adrFieldsSchema.parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      // Check project_member or admin
-      const adr = await pgOne<any>(
-        "SELECT status, project_id, author_id, title, context, decision, consequences FROM adrs WHERE id = $1",
-        [data.id],
-      );
-      if (!adr) throw new Error("ADR not found");
-      assertDraftAdrOwner(adr, userId);
-      const isAdmin = !!(await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'",
-        [userId],
-      ));
-      const isProjectMember = !!(await pgOne(
-        "SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2",
-        [userId, adr.project_id],
-      ));
-      if (!isAdmin && !isProjectMember) throw new Error("Not authorized to edit this ADR");
-      assertRequiredAdrContent({
-        title: data.title ?? adr.title,
-        context: data.context ?? adr.context,
-        decision: data.decision ?? adr.decision,
-        consequences: data.consequences ?? adr.consequences,
-      });
-
-      const fields: string[] = [];
-      const vals: any[] = [];
-      let p = 1;
-      const set = (col: string, val: any, cast = "") => {
-        if (val !== undefined) {
-          fields.push(`${col} = $${p++}${cast}`);
-          if (cast === "::jsonb") {
-            vals.push(JSON.stringify(val));
-          } else {
-            vals.push(val);
-          }
-        }
-      };
-      set("title", data.title);
-      set("tags", data.tags, "::text[]");
-      set("context", data.context);
-      set("decision", data.decision);
-      set("consequences", data.consequences);
-      set("alternatives", data.alternatives);
-      set("design_changes", data.design_changes, "::jsonb");
-      set("major_impacts", data.major_impacts, "::jsonb");
-      set("references_data", data.references_data, "::jsonb");
-
-      if (adr.status === "published" || adr.status === "superseded") {
-        fields.push(`status = $${p++}`);
-        vals.push("draft");
-      }
-
-      if (!fields.length) return { ok: true };
-      vals.push(data.id);
-      await pgQuery(`UPDATE adrs SET ${fields.join(", ")} WHERE id = $${p}`, vals);
-      return { ok: true };
-    }
-
-    const updates: any = {};
-    if (data.title !== undefined) updates.title = data.title;
-    if (data.tags !== undefined) updates.tags = data.tags;
-    if (data.context !== undefined) updates.context = data.context;
-    if (data.decision !== undefined) updates.decision = data.decision;
-    if (data.consequences !== undefined) updates.consequences = data.consequences;
-    if (data.alternatives !== undefined) updates.alternatives = data.alternatives;
-    if (data.design_changes !== undefined) updates.design_changes = data.design_changes;
-    if (data.major_impacts !== undefined) updates.major_impacts = data.major_impacts;
-    if (data.references_data !== undefined) updates.references_data = data.references_data;
-
-    const { data: adrInfo, error: fetchErr } = await supabase
-      .from("adrs")
-      .select("status, author_id, title, context, decision, consequences")
-      .eq("id", data.id)
-      .single();
-    if (fetchErr) throw new Error(fetchErr.message);
-    assertDraftAdrOwner(adrInfo, userId);
+    // Check project_member or admin
+    const adr = await pgOne<any>(
+      "SELECT status, project_id, author_id, title, context, decision, consequences FROM adrs WHERE id = $1",
+      [data.id],
+    );
+    if (!adr) throw new Error("ADR not found");
+    assertDraftAdrOwner(adr, userId);
+    const isAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'",
+      [userId],
+    ));
+    const isProjectMember = !!(await pgOne(
+      "SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2",
+      [userId, adr.project_id],
+    ));
+    if (!isAdmin && !isProjectMember) throw new Error("Not authorized to edit this ADR");
     assertRequiredAdrContent({
-      title: data.title ?? adrInfo.title,
-      context: data.context ?? adrInfo.context,
-      decision: data.decision ?? adrInfo.decision,
-      consequences: data.consequences ?? adrInfo.consequences,
+      title: data.title ?? adr.title,
+      context: data.context ?? adr.context,
+      decision: data.decision ?? adr.decision,
+      consequences: data.consequences ?? adr.consequences,
     });
-    if (adrInfo.status === "published" || adrInfo.status === "superseded") {
-      updates.status = "draft";
+
+    const fields: string[] = [];
+    const vals: any[] = [];
+    let p = 1;
+    const set = (col: string, val: any, cast = "") => {
+      if (val !== undefined) {
+        fields.push(`${col} = $${p++}${cast}`);
+        if (cast === "::jsonb") {
+          vals.push(JSON.stringify(val));
+        } else {
+          vals.push(val);
+        }
+      }
+    };
+    set("title", data.title);
+    set("tags", data.tags, "::text[]");
+    set("context", data.context);
+    set("decision", data.decision);
+    set("consequences", data.consequences);
+    set("alternatives", data.alternatives);
+    set("design_changes", data.design_changes, "::jsonb");
+    set("major_impacts", data.major_impacts, "::jsonb");
+    set("references_data", data.references_data, "::jsonb");
+
+    if (adr.status === "published" || adr.status === "superseded") {
+      fields.push(`status = $${p++}`);
+      vals.push("draft");
     }
 
-    const { error } = await supabase.from("adrs").update(updates).eq("id", data.id);
-    if (error) throw new Error(error.message);
+    if (!fields.length) return { ok: true };
+    vals.push(data.id);
+    await pgQuery(`UPDATE adrs SET ${fields.join(", ")} WHERE id = $${p}`, vals);
     return { ok: true };
   });
 
@@ -2930,74 +2077,57 @@ export const searchAdrs = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
     const like = `%${data.q.toLowerCase()}%`;
 
-    if (isDatabaseLocal) {
-      const isAdminRow = await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      );
-      const isAdmin = !!isAdminRow;
+    const isAdminRow = await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    );
+    const isAdmin = !!isAdminRow;
 
-      let sql = `
-        SELECT a.id, a.full_id, a.title, a.status, a.tags, a.updated_at, a.project_id,
-               p.name AS proj_name, p.code AS proj_code
-        FROM adrs a
-        JOIN projects p ON p.id = a.project_id
-      `;
-      const params: any[] = [];
-      let p = 1;
+    let sql = `
+      SELECT a.id, a.full_id, a.title, a.status, a.tags, a.updated_at, a.project_id,
+             p.name AS proj_name, p.code AS proj_code
+      FROM adrs a
+      JOIN projects p ON p.id = a.project_id
+    `;
+    const params: any[] = [];
+    let p = 1;
 
-      if (!isAdmin) {
-        sql += ` JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $${p++}`;
-        params.push(userId);
-      }
-
-      const likeParamIndex = p++;
-      params.push(like);
-      sql += ` WHERE (
-          lower(a.title) LIKE $${likeParamIndex}
-          OR lower(a.context) LIKE $${likeParamIndex}
-          OR lower(a.decision) LIKE $${likeParamIndex}
-          OR lower(a.consequences) LIKE $${likeParamIndex}
-          OR lower(a.full_id) LIKE $${likeParamIndex}
-          OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE lower(t) LIKE $${likeParamIndex})
-        )`;
-
-      if (data.status) {
-        sql += ` AND a.status = $${p++}`;
-        params.push(data.status);
-      }
-      if (data.project_id) {
-        sql += ` AND a.project_id = $${p++}`;
-        params.push(data.project_id);
-      }
-      const visibilityParamIndex = p++;
+    if (!isAdmin) {
+      sql += ` JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $${p++}`;
       params.push(userId);
-      sql += ` AND (a.status <> 'draft' OR a.author_id = $${visibilityParamIndex})`;
-      sql += " ORDER BY a.updated_at DESC LIMIT 50";
-      const result = await pgQuery(sql, params);
-      return (result.rows ?? []).map((a: any) => ({
-        ...a,
-        projects: { name: a.proj_name, code: a.proj_code },
-      }));
     }
 
-    let query = supabase
-      .from("adrs")
-      .select(
-        "id, full_id, title, status, tags, updated_at, project_id, author_id, projects(name,code)",
-      )
-      .or(`title.ilike.${like},context.ilike.${like},decision.ilike.${like},full_id.ilike.${like}`)
-      .order("updated_at", { ascending: false })
-      .limit(50);
-    if (data.status) query = query.eq("status", data.status);
-    if (data.project_id) query = query.eq("project_id", data.project_id);
-    const { data: results } = await query;
-    return (results ?? [])
-      .filter((adr) => adr.status !== "draft" || adr.author_id === userId)
-      .map(({ author_id: _authorId, ...adr }) => adr);
+    const likeParamIndex = p++;
+    params.push(like);
+    sql += ` WHERE (
+        lower(a.title) LIKE $${likeParamIndex}
+        OR lower(a.context) LIKE $${likeParamIndex}
+        OR lower(a.decision) LIKE $${likeParamIndex}
+        OR lower(a.consequences) LIKE $${likeParamIndex}
+        OR lower(a.full_id) LIKE $${likeParamIndex}
+        OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE lower(t) LIKE $${likeParamIndex})
+      )`;
+
+    if (data.status) {
+      sql += ` AND a.status = $${p++}`;
+      params.push(data.status);
+    }
+    if (data.project_id) {
+      sql += ` AND a.project_id = $${p++}`;
+      params.push(data.project_id);
+    }
+    const visibilityParamIndex = p++;
+    params.push(userId);
+    sql += ` AND (a.status <> 'draft' OR a.author_id = $${visibilityParamIndex})`;
+    sql += " ORDER BY a.updated_at DESC LIMIT 50";
+    const result = await pgQuery(sql, params);
+    return (result.rows ?? []).map((a: any) => ({
+      ...a,
+      projects: { name: a.proj_name, code: a.proj_code },
+    }));
   });
 
 // ─── getAdrRelationships ──────────────────────────────────────────────────────
@@ -3007,49 +2137,22 @@ export const getAdrRelationships = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ adr_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
     await assertDraftAdrVisible(context, data.adr_id);
 
-    if (isDatabaseLocal) {
-      const result = await pgQuery(
-        `SELECT r.*, sa.full_id AS source_full_id, sa.title AS source_title,
-                ta.full_id AS target_full_id, ta.title AS target_title,
-                ta.status AS target_status
-         FROM adr_relationships r
-         JOIN adrs sa ON sa.id = r.source_adr_id
-         JOIN adrs ta ON ta.id = r.target_adr_id
-         WHERE (r.source_adr_id = $1 OR r.target_adr_id = $1)
-           AND (sa.status <> 'draft' OR sa.author_id = $2)
-           AND (ta.status <> 'draft' OR ta.author_id = $2)`,
-        [data.adr_id, userId],
-      );
-      return result.rows ?? [];
-    }
-
-    const { data: rels, error } = await supabase
-      .from("adr_relationships")
-      .select(
-        "*, source:adrs!source_adr_id(full_id,title), target:adrs!target_adr_id(full_id,title,status)",
-      )
-      .or(`source_adr_id.eq.${data.adr_id},target_adr_id.eq.${data.adr_id}`);
-    if (error) throw new Error(error.message);
-    const relatedAdrIds = Array.from(
-      new Set((rels ?? []).flatMap((rel) => [rel.source_adr_id, rel.target_adr_id])),
+    const result = await pgQuery(
+      `SELECT r.*, sa.full_id AS source_full_id, sa.title AS source_title,
+              ta.full_id AS target_full_id, ta.title AS target_title,
+              ta.status AS target_status
+       FROM adr_relationships r
+       JOIN adrs sa ON sa.id = r.source_adr_id
+       JOIN adrs ta ON ta.id = r.target_adr_id
+       WHERE (r.source_adr_id = $1 OR r.target_adr_id = $1)
+         AND (sa.status <> 'draft' OR sa.author_id = $2)
+         AND (ta.status <> 'draft' OR ta.author_id = $2)`,
+      [data.adr_id, userId],
     );
-    if (relatedAdrIds.length === 0) return [];
-    const { data: relatedAdrs, error: relatedError } = await supabase
-      .from("adrs")
-      .select("id, status, author_id")
-      .in("id", relatedAdrIds);
-    if (relatedError) throw new Error(relatedError.message);
-    const visibleAdrIds = new Set(
-      (relatedAdrs ?? [])
-        .filter((adr) => adr.status !== "draft" || adr.author_id === userId)
-        .map((adr) => adr.id),
-    );
-    return (rels ?? []).filter(
-      (rel) => visibleAdrIds.has(rel.source_adr_id) && visibleAdrIds.has(rel.target_adr_id),
-    );
+    return result.rows ?? [];
   });
 
 // ─── addAdrRelationship ───────────────────────────────────────────────────────
@@ -3074,36 +2177,18 @@ export const addAdrRelationship = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
     await Promise.all([
       assertAdrCollaborationAccess(context, data.source_adr_id),
       assertAdrCollaborationAccess(context, data.target_adr_id),
     ]);
 
-    if (isDatabaseLocal) {
-      await pgQuery(
-        `INSERT INTO adr_relationships (source_adr_id, target_adr_id, rel_type, created_by)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (source_adr_id, target_adr_id, rel_type) DO NOTHING`,
-        [data.source_adr_id, data.target_adr_id, data.rel_type, userId],
-      );
-      await Promise.all([
-        publishAdrCollaborationSignal(context, data.source_adr_id, "relationshipsRevision", new Date().toISOString()),
-        publishAdrCollaborationSignal(context, data.target_adr_id, "relationshipsRevision", new Date().toISOString()),
-      ]);
-      return { ok: true };
-    }
-
-    const { error } = await supabase.from("adr_relationships").upsert(
-      {
-        source_adr_id: data.source_adr_id,
-        target_adr_id: data.target_adr_id,
-        rel_type: data.rel_type,
-        created_by: userId,
-      },
-      { onConflict: "source_adr_id,target_adr_id,rel_type" },
+    await pgQuery(
+      `INSERT INTO adr_relationships (source_adr_id, target_adr_id, rel_type, created_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (source_adr_id, target_adr_id, rel_type) DO NOTHING`,
+      [data.source_adr_id, data.target_adr_id, data.rel_type, userId],
     );
-    if (error) throw new Error(error.message);
     await Promise.all([
       publishAdrCollaborationSignal(context, data.source_adr_id, "relationshipsRevision", new Date().toISOString()),
       publishAdrCollaborationSignal(context, data.target_adr_id, "relationshipsRevision", new Date().toISOString()),
@@ -3118,38 +2203,17 @@ export const removeAdrRelationship = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, isDatabaseLocal } = context;
 
-    if (isDatabaseLocal) {
-      const relationship = await pgOne<{ source_adr_id: string; target_adr_id: string }>(
-        "SELECT source_adr_id, target_adr_id FROM adr_relationships WHERE id = $1",
-        [data.id],
-      );
-      if (!relationship) return { ok: true };
-      await Promise.all([
-        assertAdrCollaborationAccess(context, relationship.source_adr_id),
-        assertAdrCollaborationAccess(context, relationship.target_adr_id),
-      ]);
-      await pgQuery("DELETE FROM adr_relationships WHERE id = $1", [data.id]);
-      await Promise.all([
-        publishAdrCollaborationSignal(context, relationship.source_adr_id, "relationshipsRevision", new Date().toISOString()),
-        publishAdrCollaborationSignal(context, relationship.target_adr_id, "relationshipsRevision", new Date().toISOString()),
-      ]);
-      return { ok: true };
-    }
-    const { data: relationship, error: fetchError } = await supabase
-      .from("adr_relationships")
-      .select("source_adr_id, target_adr_id")
-      .eq("id", data.id)
-      .maybeSingle();
-    if (fetchError) throw new Error(fetchError.message);
+    const relationship = await pgOne<{ source_adr_id: string; target_adr_id: string }>(
+      "SELECT source_adr_id, target_adr_id FROM adr_relationships WHERE id = $1",
+      [data.id],
+    );
     if (!relationship) return { ok: true };
     await Promise.all([
       assertAdrCollaborationAccess(context, relationship.source_adr_id),
       assertAdrCollaborationAccess(context, relationship.target_adr_id),
     ]);
-    const { error } = await supabase.from("adr_relationships").delete().eq("id", data.id);
-    if (error) throw new Error(error.message);
+    await pgQuery("DELETE FROM adr_relationships WHERE id = $1", [data.id]);
     await Promise.all([
       publishAdrCollaborationSignal(context, relationship.source_adr_id, "relationshipsRevision", new Date().toISOString()),
       publishAdrCollaborationSignal(context, relationship.target_adr_id, "relationshipsRevision", new Date().toISOString()),
@@ -3164,34 +2228,14 @@ export const publishAdr = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ adr_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
     // Fetch the ADR
-    let adr: any;
-    if (isDatabaseLocal) {
-      adr = await pgOne<any>(
-        `SELECT a.*, p.code AS proj_code, p.name AS proj_name, p.repo_url, p.branch, p.adr_path, p.git_pat
-         FROM adrs a JOIN projects p ON p.id = a.project_id WHERE a.id = $1`,
-        [data.adr_id],
-      );
-    } else {
-      const { data: d2 } = await supabase
-        .from("adrs")
-        .select("*, projects(code,name,repo_url,branch,adr_path,git_pat)")
-        .eq("id", data.adr_id)
-        .single();
-      adr = d2
-        ? {
-            ...d2,
-            proj_code: d2.projects?.code,
-            proj_name: d2.projects?.name,
-            repo_url: d2.projects?.repo_url,
-            branch: d2.projects?.branch,
-            adr_path: d2.projects?.adr_path,
-            git_pat: d2.projects?.git_pat,
-          }
-        : null;
-    }
+    const adr = await pgOne<any>(
+      `SELECT a.*, p.code AS proj_code, p.name AS proj_name, p.repo_url, p.branch, p.adr_path, p.git_pat
+       FROM adrs a JOIN projects p ON p.id = a.project_id WHERE a.id = $1`,
+      [data.adr_id],
+    );
     if (!adr) throw new Error("ADR not found");
     assertDraftAdrOwner(adr, userId);
 
@@ -3215,56 +2259,25 @@ export const publishAdr = createServerFn({ method: "POST" })
     }
 
     // Get next version number
-    let nextVersion = 1;
-    if (isDatabaseLocal) {
-      const vRow = await pgOne<{ max: number }>(
-        "SELECT COALESCE(MAX(version_number), 0) + 1 AS max FROM published_versions WHERE adr_id = $1",
-        [data.adr_id],
-      );
-      nextVersion = vRow?.max ?? 1;
-    } else {
-      const { data: vRows } = await supabase
-        .from("published_versions")
-        .select("version_number")
-        .eq("adr_id", data.adr_id)
-        .order("version_number", { ascending: false })
-        .limit(1);
-      nextVersion = (vRows?.[0]?.version_number ?? 0) + 1;
-    }
+    const vRow = await pgOne<{ max: number }>(
+      "SELECT COALESCE(MAX(version_number), 0) + 1 AS max FROM published_versions WHERE adr_id = $1",
+      [data.adr_id],
+    );
+    const nextVersion = vRow?.max ?? 1;
 
     // Insert published version + update ADR status
-    if (isDatabaseLocal) {
-      await pgQuery(
-        `INSERT INTO published_versions (adr_id, version_number, markdown, git_commit_hash, published_by)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [data.adr_id, nextVersion, markdown, gitCommitHash ?? null, userId],
-      );
-      await pgQuery(
-        `UPDATE adrs SET status = 'published', current_version = $1,
-         repository_path = COALESCE($2, repository_path), repository_deleted_at = NULL
-         WHERE id = $3`,
-        [nextVersion, repositoryPath ?? null, data.adr_id],
-      );
-      await publishAdrCollaborationSignal(context, data.adr_id, "status", "published");
-    } else {
-      await supabase.from("published_versions").insert({
-        adr_id: data.adr_id,
-        version_number: nextVersion,
-        markdown,
-        git_commit_hash: gitCommitHash ?? null,
-        published_by: userId,
-      });
-      await supabase
-        .from("adrs")
-        .update({
-          status: "published",
-          current_version: nextVersion,
-          ...(repositoryPath ? { repository_path: repositoryPath } : {}),
-          repository_deleted_at: null,
-        })
-        .eq("id", data.adr_id);
-      await publishAdrCollaborationSignal(context, data.adr_id, "status", "published");
-    }
+    await pgQuery(
+      `INSERT INTO published_versions (adr_id, version_number, markdown, git_commit_hash, published_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [data.adr_id, nextVersion, markdown, gitCommitHash ?? null, userId],
+    );
+    await pgQuery(
+      `UPDATE adrs SET status = 'published', current_version = $1,
+       repository_path = COALESCE($2, repository_path), repository_deleted_at = NULL
+       WHERE id = $3`,
+      [nextVersion, repositoryPath ?? null, data.adr_id],
+    );
+    await publishAdrCollaborationSignal(context, data.adr_id, "status", "published");
 
     return { version: nextVersion, gitCommitHash, markdown };
   });
@@ -3284,81 +2297,54 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
     // Extract keywords (longer than 4 chars)
     const text = `${data.title} ${data.context}`.toLowerCase();
     const words = Array.from(new Set(text.split(/\W+/).filter((w) => w.length > 4))).slice(0, 5);
-    console.log("findSimilarAdrs text:", text.slice(0, 50));
-    console.log("findSimilarAdrs words:", words);
 
     if (words.length === 0) return [];
 
-    if (isDatabaseLocal) {
-      const isAdminRow = await pgOne(
-        "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-        [userId],
-      );
-      const isAdmin = !!isAdminRow;
+    const isAdminRow = await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [userId],
+    );
+    const isAdmin = !!isAdminRow;
 
-      const params: any[] = [];
-      let sql = `
-        SELECT a.id, a.full_id, a.title
-        FROM adrs a
-        JOIN projects p ON p.id = a.project_id
-      `;
+    const params: any[] = [];
+    let sql = `
+      SELECT a.id, a.full_id, a.title
+      FROM adrs a
+      JOIN projects p ON p.id = a.project_id
+    `;
 
-      if (!isAdmin) {
-        params.push(userId);
-        sql += ` JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1 `;
-      }
-
-      const offset = params.length;
-      words.forEach((w) => params.push(`%${w}%`));
-
-      const conditions = words.map(
-        (_, i) =>
-          `(lower(a.title) LIKE $${offset + i + 1} OR lower(a.context) LIKE $${offset + i + 1})`,
-      );
-      const visibilityParamIndex = params.length + 1;
+    if (!isAdmin) {
       params.push(userId);
-      sql += ` WHERE (a.status <> 'draft' OR a.author_id = $${visibilityParamIndex})
-               AND (${conditions.join(" OR ")}) LIMIT 20`;
-
-      const result = await pgQuery(sql, params);
-
-      const scored = (result.rows ?? []).map((r) => {
-        const str = `${r.title} ${r.context}`.toLowerCase();
-        let score = 0;
-        words.forEach((w) => {
-          if (str.includes(w)) score++;
-        });
-        return { ...r, score };
-      });
-      scored.sort((a, b) => b.score - a.score);
-      return scored.slice(0, 5).map((r) => ({ id: r.id, full_id: r.full_id, title: r.title }));
+      sql += ` JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1 `;
     }
 
-    // Supabase
-    const orCondition = words.map((w) => `title.ilike.%${w}%,context.ilike.%${w}%`).join(",");
-    const { data: results, error } = await supabase
-      .from("adrs")
-      .select("id, full_id, title, context, status, author_id")
-      .or(orCondition)
-      .limit(20);
+    const offset = params.length;
+    words.forEach((w) => params.push(`%${w}%`));
 
-    if (error) throw new Error(error.message);
+    const conditions = words.map(
+      (_, i) =>
+        `(lower(a.title) LIKE $${offset + i + 1} OR lower(a.context) LIKE $${offset + i + 1})`,
+    );
+    const visibilityParamIndex = params.length + 1;
+    params.push(userId);
+    sql += ` WHERE (a.status <> 'draft' OR a.author_id = $${visibilityParamIndex})
+             AND (${conditions.join(" OR ")}) LIMIT 20`;
 
-    const scored = (results ?? [])
-      .filter((adr) => adr.status !== "draft" || adr.author_id === userId)
-      .map((r) => {
-        const str = `${r.title} ${r.context}`.toLowerCase();
-        let score = 0;
-        words.forEach((w) => {
-          if (str.includes(w)) score++;
-        });
-        return { ...r, score };
+    const result = await pgQuery(sql, params);
+
+    const scored = (result.rows ?? []).map((r) => {
+      const str = `${r.title} ${r.context}`.toLowerCase();
+      let score = 0;
+      words.forEach((w) => {
+        if (str.includes(w)) score++;
       });
+      return { ...r, score };
+    });
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, 5).map((r) => ({ id: r.id, full_id: r.full_id, title: r.title }));
   });
@@ -3370,71 +2356,29 @@ export const getProjectForGraph = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { supabase, userId, isDatabaseLocal } = context;
+    const { userId } = context;
 
-    if (isDatabaseLocal) {
-      const [adrsRow, relsRow] = await Promise.all([
-        pgQuery(
-          `SELECT DISTINCT a.id, a.full_id, a.title, a.status
-           FROM adrs a
-           WHERE (a.status <> 'draft' OR a.author_id = $2)
-             AND (a.project_id = $1
-               OR a.id IN (SELECT source_adr_id FROM adr_relationships r JOIN adrs ta ON ta.id = r.target_adr_id WHERE ta.project_id = $1)
-               OR a.id IN (SELECT target_adr_id FROM adr_relationships r JOIN adrs sa ON sa.id = r.source_adr_id WHERE sa.project_id = $1))`,
-          [data.project_id, userId],
-        ),
-        pgQuery(
-          `SELECT r.id, r.source_adr_id, r.target_adr_id, r.rel_type
-           FROM adr_relationships r
-           JOIN adrs sa ON sa.id = r.source_adr_id
-           JOIN adrs ta ON ta.id = r.target_adr_id
-           WHERE (r.source_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)
-              OR r.target_adr_id IN (SELECT id FROM adrs WHERE project_id = $1))
-             AND (sa.status <> 'draft' OR sa.author_id = $2)
-             AND (ta.status <> 'draft' OR ta.author_id = $2)`,
-          [data.project_id, userId],
-        ),
-      ]);
-      return { adrs: adrsRow.rows ?? [], relationships: relsRow.rows ?? [] };
-    }
-
-    const { data: adrsInProject, error: projectAdrsError } = await supabase
-      .from("adrs")
-      .select("id")
-      .eq("project_id", data.project_id)
-      .or(`status.neq.draft,author_id.eq.${userId}`);
-    if (projectAdrsError) throw new Error(projectAdrsError.message);
-    const projectAdrIds = adrsInProject?.map((a: any) => a.id) ?? [];
-    if (projectAdrIds.length === 0) return { adrs: [], relationships: [] };
-
-    const { data: rels, error: relationshipsError } = await supabase
-      .from("adr_relationships")
-      .select("id, source_adr_id, target_adr_id, rel_type")
-      .or(
-        `source_adr_id.in.(${projectAdrIds.join(",")}),target_adr_id.in.(${projectAdrIds.join(",")})`,
-      );
-    if (relationshipsError) throw new Error(relationshipsError.message);
-
-    const allAdrIds = new Set(projectAdrIds);
-    rels?.forEach((r: any) => {
-      allAdrIds.add(r.source_adr_id);
-      allAdrIds.add(r.target_adr_id);
-    });
-
-    const { data: adrs, error: adrsError } = await supabase
-      .from("adrs")
-      .select("id, full_id, title, status, author_id")
-      .in("id", Array.from(allAdrIds));
-    if (adrsError) throw new Error(adrsError.message);
-    const visibleAdrs = (adrs ?? []).filter(
-      (adr) => adr.status !== "draft" || adr.author_id === userId,
-    );
-    const visibleAdrIds = new Set(visibleAdrs.map((adr) => adr.id));
-
-    return {
-      adrs: visibleAdrs.map(({ author_id: _authorId, ...adr }) => adr),
-      relationships: (rels ?? []).filter(
-        (rel) => visibleAdrIds.has(rel.source_adr_id) && visibleAdrIds.has(rel.target_adr_id),
+    const [adrsRow, relsRow] = await Promise.all([
+      pgQuery(
+        `SELECT DISTINCT a.id, a.full_id, a.title, a.status
+         FROM adrs a
+         WHERE (a.status <> 'draft' OR a.author_id = $2)
+           AND (a.project_id = $1
+             OR a.id IN (SELECT source_adr_id FROM adr_relationships r JOIN adrs ta ON ta.id = r.target_adr_id WHERE ta.project_id = $1)
+             OR a.id IN (SELECT target_adr_id FROM adr_relationships r JOIN adrs sa ON sa.id = r.source_adr_id WHERE sa.project_id = $1))`,
+        [data.project_id, userId],
       ),
-    };
+      pgQuery(
+        `SELECT r.id, r.source_adr_id, r.target_adr_id, r.rel_type
+         FROM adr_relationships r
+         JOIN adrs sa ON sa.id = r.source_adr_id
+         JOIN adrs ta ON ta.id = r.target_adr_id
+         WHERE (r.source_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)
+            OR r.target_adr_id IN (SELECT id FROM adrs WHERE project_id = $1))
+           AND (sa.status <> 'draft' OR sa.author_id = $2)
+           AND (ta.status <> 'draft' OR ta.author_id = $2)`,
+        [data.project_id, userId],
+      ),
+    ]);
+    return { adrs: adrsRow.rows ?? [], relationships: relsRow.rows ?? [] };
   });

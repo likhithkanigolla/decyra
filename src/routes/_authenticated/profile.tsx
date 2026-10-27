@@ -7,8 +7,6 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { User, Lock, Shield, Check } from "lucide-react";
 
-const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
-
 export const Route = createFileRoute("/_authenticated/profile")({
   head: () => ({ meta: [{ title: "Profile — Decyra" }] }),
   component: ProfilePage,
@@ -151,78 +149,62 @@ function ProfilePage() {
         </form>
       </section>
 
-      {/* Change Password — local mode only */}
-      {IS_LOCAL ? (
-        <section className="rounded-xl border border-border bg-card p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <Lock className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Change password</h2>
-          </div>
-          <form onSubmit={savePassword} className="space-y-4">
-            <Field label="Current password">
+      {/* Change Password */}
+      <section className="rounded-xl border border-border bg-card p-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Lock className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Change password</h2>
+        </div>
+        <form onSubmit={savePassword} className="space-y-4">
+          <Field label="Current password">
+            <input
+              type="password"
+              required
+              value={pwForm.current_password}
+              onChange={(e) => setPwForm({ ...pwForm, current_password: e.target.value })}
+              className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="New password">
               <input
                 type="password"
                 required
-                value={pwForm.current_password}
-                onChange={(e) => setPwForm({ ...pwForm, current_password: e.target.value })}
+                minLength={8}
+                value={pwForm.new_password}
+                onChange={(e) => setPwForm({ ...pwForm, new_password: e.target.value })}
+                placeholder="Min 8 characters"
                 className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
             </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="New password">
-                <input
-                  type="password"
-                  required
-                  minLength={8}
-                  value={pwForm.new_password}
-                  onChange={(e) => setPwForm({ ...pwForm, new_password: e.target.value })}
-                  placeholder="Min 8 characters"
-                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-                />
-              </Field>
-              <Field label="Confirm new password">
-                <input
-                  type="password"
-                  required
-                  minLength={8}
-                  value={pwForm.confirm}
-                  onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })}
-                  placeholder="Repeat password"
-                  className={`w-full h-10 rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-ring bg-background ${
-                    pwForm.confirm && pwForm.confirm !== pwForm.new_password ? "border-destructive" : "border-input"
-                  }`}
-                />
-              </Field>
-            </div>
-            {pwForm.confirm && pwForm.confirm !== pwForm.new_password && (
-              <p className="text-xs text-destructive">Passwords do not match</p>
-            )}
-            <div className="flex justify-end">
-              <button
-                disabled={pwBusy || (!!pwForm.confirm && pwForm.confirm !== pwForm.new_password)}
-                type="submit"
-                className="inline-flex items-center gap-2 h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {pwBusy ? "Changing…" : <><Lock className="h-4 w-4" /> Change password</>}
-              </button>
-            </div>
-          </form>
-        </section>
-      ) : (
-        <section className="rounded-xl border border-border bg-card p-6">
-          <div className="flex items-center gap-2 mb-3">
-            <Lock className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Password</h2>
+            <Field label="Confirm new password">
+              <input
+                type="password"
+                required
+                minLength={8}
+                value={pwForm.confirm}
+                onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })}
+                placeholder="Repeat password"
+                className={`w-full h-10 rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-ring bg-background ${
+                  pwForm.confirm && pwForm.confirm !== pwForm.new_password ? "border-destructive" : "border-input"
+                }`}
+              />
+            </Field>
           </div>
-          <p className="text-sm text-muted-foreground">
-            To change your password, use the{" "}
-            <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer" className="text-primary hover:underline">
-              Supabase dashboard
-            </a>{" "}
-            or the email link from your account settings.
-          </p>
-        </section>
-      )}
+          {pwForm.confirm && pwForm.confirm !== pwForm.new_password && (
+            <p className="text-xs text-destructive">Passwords do not match</p>
+          )}
+          <div className="flex justify-end">
+            <button
+              disabled={pwBusy || (!!pwForm.confirm && pwForm.confirm !== pwForm.new_password)}
+              type="submit"
+              className="inline-flex items-center gap-2 h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {pwBusy ? "Changing…" : <><Lock className="h-4 w-4" /> Change password</>}
+            </button>
+          </div>
+        </form>
+      </section>
 
       {/* Account info */}
       <section className="rounded-xl border border-border bg-card p-6">

@@ -635,7 +635,7 @@ function AdrCollaborationListener({
   invalidate: (queryKey: string[]) => void;
 }) {
   const statusRef = useRef(adr.status);
-  const relationshipsRevisionRef = useRef<string | undefined>();
+  const relationshipsRevisionRef = useRef<string | undefined>(undefined);
   const form: AdrFormData = {
     ...DEFAULT_ADR_FORM,
     title: adr.title ?? "",

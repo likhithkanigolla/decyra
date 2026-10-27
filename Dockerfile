@@ -38,7 +38,7 @@ RUN npm install --omit=dev
 
 # Copy built assets and necessary runtime files
 COPY --from=builder /app/.output ./.output
-COPY --from=builder /app/supabase ./supabase
+COPY --from=builder /app/migrations ./migrations
 
 # Set environment variables
 ENV NODE_ENV=production

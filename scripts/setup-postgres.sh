@@ -31,13 +31,6 @@ if [ ! -f .env ]; then
     echo "✅ .env created. Please update it with your configuration if needed."
 fi
 
-# Update .env to use local postgres by default
-echo "🔧 Configuring .env for local PostgreSQL..."
-if grep -q "DATABASE_TYPE=supabase" .env; then
-    sed -i.bak 's/DATABASE_TYPE=supabase/DATABASE_TYPE=postgres/' .env
-    rm -f .env.bak
-fi
-
 # Start Docker containers
 echo "🐳 Starting Docker containers..."
 $COMPOSE_CMD up -d

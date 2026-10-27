@@ -12,10 +12,10 @@ Architecture Hub (internally referred to as Decyra) is a modern, collaborative p
 - **Project Data Archives**: Export visible ADR content and relationships as versioned JSON, or import an archive into another project. Imported records are drafts; approvals, comments, and published-version history are not included.
 - **Relationship Graph**: Visually track dependencies across ADRs (e.g., `depends_on`, `supersedes`, `conflicts_with`) using an interactive, auto-layout React Flow graph. Supports cross-project dependencies.
 - **Duplicate Detection**: Smart keyword extraction actively warns you if a similar ADR already exists across your organization while you are typing, preventing duplicated engineering efforts.
-- **Dual Database Modes**: Run the application completely locally via PostgreSQL/Docker (`DATABASE_TYPE=postgres`) or connect it to a managed Supabase backend.
+- **Self-Hosted PostgreSQL**: Run the application via native PostgreSQL and Docker.
 - **Onboarding Experience**: First-time setup creates the initial administrator, and empty projects allow you to instantly generate Demo ADRs to learn the system.
 
-Project archives are intended for moving ADR content between projects and application instances, not as full database backups. Use PostgreSQL/Supabase backup and restore procedures when a complete recovery of users, approvals, comments, and version history is required.
+Project archives are intended for moving ADR content between projects and application instances, not as full database backups. Use PostgreSQL backup and restore procedures when a complete recovery of users, approvals, comments, and version history is required.
 
 ## 🛠 Tech Stack
 
@@ -24,7 +24,7 @@ Project archives are intended for moving ADR content between projects and applic
 - **State Management**: [TanStack Query](https://tanstack.com/query/latest)
 - **Styling**: Tailwind CSS + Radix UI Primitives
 - **Graph Visualization**: [React Flow](https://reactflow.dev/)
-- **Database**: PostgreSQL 18 (via local `pg` client or Supabase)
+- **Database**: PostgreSQL 18 (via native `pg` client)
 - **Icons**: Lucide React
 - **Markdown Editor**: `@uiw/react-md-editor`
 
@@ -77,15 +77,13 @@ When you first launch the application, navigate to the Auth page. Since no admin
 1. Enter your Name, Email, Username, and Password to create the root **Administrator** account.
 2. Once signed in, you can manage the entire workspace.
 
-### Password Management (Local Mode)
+### Password Management
 
-If a user forgets their password in local development mode (where no email server is configured), administrators can reset passwords via the terminal:
+If a user forgets their password, administrators can reset passwords via the terminal or users can reset via their recovery key:
 
 ```bash
 npm run reset-password <email-or-username> <new-password>
 ```
-
-*(Note: In Supabase mode, standard email password resets are supported via the UI).*
 
 ---
 
@@ -149,5 +147,5 @@ Access control is strictly enforced:
 - `/src/components/decyra`: Reusable UI components specifically designed for the ADR experience (Markdown Editor, Forms, Status Badges).
 - `/src/lib/api`: TanStack server functions (`decyra.functions.ts`) handling all database interactions securely on the backend.
 - `/src/routes`: TanStack file-based routing tree managing all pages and layouts.
-- `/supabase/migrations`: SQL migration scripts containing the database schema, user roles, and triggers.
+- `/migrations`: SQL migration scripts containing the database schema, user roles, and triggers.
 - `/scripts`: Utility scripts for the local environment (e.g., `reset-password.ts`, `seed.ts`).

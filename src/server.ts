@@ -20,18 +20,15 @@ async function getServerEntry(): Promise<ServerEntry> {
 }
 
 /**
- * Auto-run migrations when using local PostgreSQL mode.
- * Runs once per process startup, skipped entirely in Supabase mode.
+ * Auto-run migrations on startup.
+ * Runs once per process startup.
  */
 async function runMigrationsIfNeeded(): Promise<void> {
   if (migrationsRan) return;
   migrationsRan = true;
 
-  const dbType = process.env.DATABASE_TYPE;
-  if (dbType !== 'postgres') return;
-
   try {
-    console.log('🔄 [server] Running database migrations for local PostgreSQL...');
+    console.log('🔄 [server] Running database migrations for PostgreSQL...');
     const { runMigrations } = await import('./integrations/database/migrate');
     await runMigrations();
     console.log('✅ [server] Migrations complete.');

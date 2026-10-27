@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   getDatabaseConfig,
   getPostgresConfig,
-  getSupabaseConfig,
   validateDatabaseConfig,
 } from "@/integrations/database/config";
 
@@ -17,24 +16,13 @@ describe("database config", () => {
     process.env = originalEnv;
   });
 
-  it("defaults to postgres database type when not specified", () => {
-    delete process.env.DATABASE_TYPE;
+  it("returns postgres database type", () => {
     const config = getDatabaseConfig();
     expect(config.type).toBe("postgres");
     expect(config.isLocal).toBe(true);
-    expect(config.isSupabase).toBe(false);
   });
 
-  it("identifies supabase mode when configured", () => {
-    process.env.DATABASE_TYPE = "supabase";
-    const config = getDatabaseConfig();
-    expect(config.type).toBe("supabase");
-    expect(config.isLocal).toBe(false);
-    expect(config.isSupabase).toBe(true);
-  });
-
-  it("reads postgres configuration correctly", () => {
-    process.env.DATABASE_TYPE = "postgres";
+  it("reads postgres configuration correctly with custom variables", () => {
     process.env.POSTGRES_HOST = "custom-host";
     process.env.POSTGRES_PORT = "5433";
     process.env.POSTGRES_DB = "testdb";
@@ -51,38 +39,44 @@ describe("database config", () => {
     expect(pg.url).toBe(process.env.DATABASE_URL);
   });
 
-  it("throws error when getSupabaseConfig is called in postgres mode", () => {
-    process.env.DATABASE_TYPE = "postgres";
-    expect(() => getSupabaseConfig()).toThrow(
-      'Supabase config requested but DATABASE_TYPE is not "supabase"'
-    );
-  });
-
-  it("throws error when getPostgresConfig is called in supabase mode", () => {
-    process.env.DATABASE_TYPE = "supabase";
-    expect(() => getPostgresConfig()).toThrow(
-      'Postgres config requested but DATABASE_TYPE is not "postgres"'
-    );
-  });
-
-  it("validates postgres configuration and flags missing DATABASE_URL", () => {
-    process.env.DATABASE_TYPE = "postgres";
+  it("provides sensible defaults when env variables are not set", () => {
+    delete process.env.POSTGRES_HOST;
+    delete process.env.POSTGRES_PORT;
+    delete process.env.POSTGRES_DB;
+    delete process.env.POSTGRES_USER;
+    delete process.env.POSTGRES_PASSWORD;
     delete process.env.DATABASE_URL;
-    expect(() => validateDatabaseConfig()).toThrow("Missing PostgreSQL environment variables: DATABASE_URL");
+
+    const pg = getPostgresConfig();
+    expect(pg.host).toBe("localhost");
+    expect(pg.port).toBe(5432);
+    expect(pg.database).toBe("decyra");
+    expect(pg.user).toBe("postgres");
+    expect(pg.password).toBeUndefined();
+    expect(pg.url).toBeUndefined();
   });
 
-  it("validates postgres configuration successfully when present", () => {
-    process.env.DATABASE_TYPE = "postgres";
+  it("validates postgres configuration successfully when DATABASE_URL is present", () => {
     process.env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/decyra";
     expect(() => validateDatabaseConfig()).not.toThrow();
   });
 
-  it("validates supabase configuration and flags missing keys", () => {
-    process.env.DATABASE_TYPE = "supabase";
-    delete process.env.SUPABASE_URL;
-    delete process.env.SUPABASE_PUBLISHABLE_KEY;
+  it("validates postgres configuration successfully when discrete host/db/user are present", () => {
+    delete process.env.DATABASE_URL;
+    process.env.POSTGRES_HOST = "localhost";
+    process.env.POSTGRES_DB = "decyra";
+    process.env.POSTGRES_USER = "postgres";
+    expect(() => validateDatabaseConfig()).not.toThrow();
+  });
+
+  it("throws error when neither connection string nor discrete config is present", () => {
+    delete process.env.DATABASE_URL;
+    process.env.POSTGRES_HOST = "";
+    process.env.POSTGRES_DB = "";
+    process.env.POSTGRES_USER = "";
     expect(() => validateDatabaseConfig()).toThrow(
-      "Missing Supabase environment variables: SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY"
+      "Missing PostgreSQL configuration: Provide DATABASE_URL or POSTGRES_HOST, POSTGRES_DB, and POSTGRES_USER."
     );
   });
 });
+

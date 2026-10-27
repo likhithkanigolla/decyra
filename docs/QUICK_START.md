@@ -2,17 +2,10 @@
 
 ## Start Here
 
-### First Time Setup (Local PostgreSQL)
+### First Time Setup
 ```bash
 npm install
 npm run db:setup
-npm run dev
-```
-
-### First Time Setup (Supabase)
-```bash
-npm install
-# Update .env with Supabase credentials
 npm run dev
 ```
 
@@ -23,82 +16,40 @@ npm run dev
 | `npm run db:setup` | Start PostgreSQL with Docker |
 | `npm run db:stop` | Stop PostgreSQL containers |
 | `npm run db:reset` | Delete all data and restart fresh |
+| `npm run create-admin` | Create the initial administrator |
+| `npm run reset-password` | Reset a user password via CLI |
 | `npm run dev` | Start development server |
 | `npm run build` | Build for production |
+| `npm test` | Run test suite |
 
 ## Database Access
 
-### PostgreSQL (local)
+### PostgreSQL
 - **Connection**: `postgresql://postgres:postgres@localhost:5432/decyra`
-- **pgAdmin**: http://localhost:5050
-- **CLI**: `docker-compose exec postgres psql -U postgres -d decyra`
-
-### Supabase (cloud)
-- **Console**: https://app.supabase.com
-- **API Documentation**: Check Supabase project settings
-- **Migrations**: Run `supabase db push`
+- **CLI**: `docker compose exec postgres psql -U postgres -d decyra`
 
 ## Environment Variables
 
-### For Local PostgreSQL
 ```env
 DATABASE_TYPE=postgres
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/decyra
-```
-
-### For Supabase
-```env
-DATABASE_TYPE=supabase
-SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_PUBLISHABLE_KEY=your-key
-VITE_SUPABASE_PUBLISHABLE_KEY=your-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=decyra
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_JWT_SECRET=your-secret-key
 ```
 
 ## Code Patterns
 
-### Check Database Type
-```typescript
-import { isSupabase, isLocal } from '@/integrations/database/adapter';
-
-if (isSupabase()) {
-  // Use Supabase
-} else if (isLocal()) {
-  // Use local PostgreSQL
-}
-```
-
 ### Query Data
 ```typescript
-// For Supabase
-import { supabase } from '@/integrations/supabase/client';
-const { data } = await supabase.from('table').select('*');
+import { query, queryOne } from '@/integrations/database/postgres';
 
-// For PostgreSQL
-import { query } from '@/integrations/database/postgres';
-const { rows } = await query('SELECT * FROM table');
+// Fetch multiple rows
+const { rows } = await query('SELECT * FROM projects WHERE owner_id = $1', [userId]);
+
+// Fetch single row
+const adr = await queryOne('SELECT * FROM adrs WHERE id = $1', [adrId]);
 ```
-
-## Documentation Files
-
-- **[DATABASE_SETUP.md](./DATABASE_SETUP.md)** - Complete setup guide
-- **[EXAMPLES.md](./src/integrations/database/EXAMPLES.md)** - Code examples
-- **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** - Common issues and fixes
-
-## Need Help?
-
-1. Check [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
-2. View docker logs: `docker-compose logs -f`
-3. Check pgAdmin: http://localhost:5050
-4. Review database config: `src/integrations/database/config.ts`
-
-## Switching Databases
-
-To switch from local to Supabase:
-1. Update `DATABASE_TYPE` in `.env`
-2. Add Supabase credentials
-3. Ensure migrations are applied
-4. Restart dev server
-
-No code changes needed!

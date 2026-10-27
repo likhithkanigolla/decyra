@@ -6,15 +6,12 @@ import {
   loginLocalFn,
   signUpLocalFn,
   checkIsFirstRunFn,
-  lookupEmailByUsernameFn,
   generateRecoveryKeyFn,
   resetPasswordWithRecoveryKeyFn,
 } from "@/lib/api/decyra.functions";
 import { getErrorMessage } from "@/lib/utils";
 import { KeyRound, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
-
-const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({ meta: [{ title: "Sign in — Decyra" }] }),
@@ -41,7 +38,6 @@ function AuthPage() {
   const localLoginFn = useServerFn(loginLocalFn);
   const localSignUpFn = useServerFn(signUpLocalFn);
   const checkFirstRun = useServerFn(checkIsFirstRunFn);
-  const lookupEmailByUsername = useServerFn(lookupEmailByUsernameFn);
   const generateRecoveryKey = useServerFn(generateRecoveryKeyFn);
   const resetWithRecoveryKey = useServerFn(resetPasswordWithRecoveryKeyFn);
 
@@ -50,31 +46,22 @@ function AuthPage() {
   }, [checkFirstRun]);
 
   useEffect(() => {
-    if (IS_LOCAL) {
-      // Check for existing valid local token
-      const token = localStorage.getItem("local_auth_token");
-      if (token) {
-        try {
-          const parts = token.split(".");
-          if (parts.length === 3) {
-            const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-            if (!payload.exp || payload.exp > Math.floor(Date.now() / 1000)) {
-              navigate({ to: "/dashboard" });
-              return;
-            }
+    // Check for existing valid local token
+    const token = localStorage.getItem("local_auth_token");
+    if (token) {
+      try {
+        const parts = token.split(".");
+        if (parts.length === 3) {
+          const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+          if (!payload.exp || payload.exp > Math.floor(Date.now() / 1000)) {
+            navigate({ to: "/dashboard" });
+            return;
           }
-          localStorage.removeItem("local_auth_token");
-        } catch {
-          localStorage.removeItem("local_auth_token");
         }
+        localStorage.removeItem("local_auth_token");
+      } catch {
+        localStorage.removeItem("local_auth_token");
       }
-    } else {
-      // Supabase mode: check existing session
-      import("@/integrations/supabase/client").then(({ supabase }) => {
-        supabase.auth.getSession().then(({ data }) => {
-          if (data.session) navigate({ to: "/dashboard" });
-        });
-      });
     }
   }, [navigate]);
 
@@ -125,51 +112,20 @@ function AuthPage() {
     setLoading(true);
     try {
       if (isForgotPass) {
-        if (IS_LOCAL) {
-          toast.error("Email-based password resets are disabled in self-hosted mode. Use your server recovery key below.");
-          setLoading(false);
-          return;
-        }
-        let loginEmail = identifier;
-        if (!loginEmail.includes("@")) {
-          const res = await lookupEmailByUsername({ data: { username: identifier } });
-          loginEmail = res.email;
-        }
-        const { supabase } = await import("@/integrations/supabase/client");
-        const { error } = await supabase.auth.resetPasswordForEmail(loginEmail, {
-          redirectTo: `${window.location.origin}/update-password`,
-        });
-        if (error) throw error;
-        toast.success("Password reset email sent! Check your inbox.");
-        setIsForgotPass(false);
+        toast.error("Use your server recovery key below to reset your password.");
         setLoading(false);
         return;
       }
 
-      if (IS_LOCAL) {
-        // Local Postgres mode
-        if (isSignUp && isFirstRun) {
-          const result = await localSignUpFn({ data: { email: identifier, password, fullName, username: username || undefined } });
-          localStorage.setItem("local_auth_token", result.token);
-        } else {
-          const result = await localLoginFn({ data: { identifier, password } });
-          localStorage.setItem("local_auth_token", result.token);
-        }
-        queryClient.clear();
-        navigate({ to: "/dashboard" });
+      if (isSignUp && isFirstRun) {
+        const result = await localSignUpFn({ data: { email: identifier, password, fullName, username: username || undefined } });
+        localStorage.setItem("local_auth_token", result.token);
       } else {
-        // Supabase mode
-        let loginEmail = identifier;
-        if (!loginEmail.includes("@")) {
-          const res = await lookupEmailByUsername({ data: { username: identifier } });
-          loginEmail = res.email;
-        }
-        const { supabase } = await import("@/integrations/supabase/client");
-        const { error } = await supabase.auth.signInWithPassword({ email: loginEmail, password });
-        if (error) throw error;
-        queryClient.clear();
-        navigate({ to: "/dashboard" });
+        const result = await localLoginFn({ data: { identifier, password } });
+        localStorage.setItem("local_auth_token", result.token);
       }
+      queryClient.clear();
+      navigate({ to: "/dashboard" });
     } catch (err: any) {
       toast.error(getErrorMessage(err, "Authentication failed"));
     } finally {
@@ -198,9 +154,7 @@ function AuthPage() {
             {isRecoveryReset
               ? "Enter your recovery key found in the server file structure."
               : isForgotPass
-                ? IS_LOCAL
-                  ? "Self-hosted recovery key authentication."
-                  : "Enter your email or username to receive a reset link."
+                ? "Self-hosted recovery key authentication."
                 : isSignUp && isFirstRun
                   ? "Create the initial administrator account."
                   : "Welcome back to your governance workspace."}
@@ -256,7 +210,7 @@ function AuthPage() {
             </form>
           ) : (
             <>
-              {isForgotPass && IS_LOCAL && (
+              {isForgotPass && (
                 <div className="mt-4 p-3 rounded-lg bg-accent/40 border border-border text-xs space-y-2">
                   <div className="flex items-center gap-2 font-medium text-foreground">
                     <ShieldAlert className="h-4 w-4 text-amber-500" />
@@ -365,7 +319,7 @@ function AuthPage() {
                     />
                   </div>
                 )}
-                {!IS_LOCAL || !isForgotPass ? (
+                {!isForgotPass ? (
                   <button
                     disabled={loading}
                     type="submit"
@@ -373,11 +327,9 @@ function AuthPage() {
                   >
                     {loading
                       ? "Please wait…"
-                      : isForgotPass
-                        ? "Send Reset Link"
-                        : isSignUp && isFirstRun
-                          ? "Complete Setup"
-                          : "Sign in"}
+                      : isSignUp && isFirstRun
+                        ? "Complete Setup"
+                        : "Sign in"}
                   </button>
                 ) : null}
               </form>
@@ -391,7 +343,7 @@ function AuthPage() {
                 Sign in
               </button>
             </p>
-          ) : (isFirstRun && IS_LOCAL) ? (
+          ) : isFirstRun ? (
             <p className="mt-4 text-center text-xs text-muted-foreground">
               {isSignUp ? "Already set up?" : "Initial setup required."}{" "}
               <button
@@ -404,7 +356,7 @@ function AuthPage() {
             </p>
           ) : (
             <p className="mt-4 text-center text-xs text-muted-foreground">
-              {!IS_LOCAL ? "New users must be invited by a platform admin via Supabase." : "New users must be created by a platform admin."}
+              New users must be created by a platform admin.
             </p>
           )}
         </div>

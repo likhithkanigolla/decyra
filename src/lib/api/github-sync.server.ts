@@ -5,7 +5,6 @@ import * as path from "node:path";
 import { simpleGit } from "simple-git";
 import { z } from "zod";
 import { parseAdrMarkdown } from "@/lib/adr-markdown";
-import { getDatabaseConfig } from "@/integrations/database/config";
 
 interface GitHubSyncProject {
   id: string;
@@ -68,44 +67,21 @@ async function localQueryOne<T>(sql: string, values?: unknown[]) {
 }
 
 async function findProject(repositoryFullName: string) {
-  const isLocal = getDatabaseConfig().isLocal;
-  const rows: GitHubSyncProject[] = isLocal
-    ? (
-        await localQuery<GitHubSyncProject>(
-          `SELECT p.id, p.repo_url, p.branch, p.adr_path, p.git_pat, p.github_sync_enabled,
-                  s.secret AS github_webhook_secret, p.github_sync_last_commit, p.created_by
-           FROM projects p
-           LEFT JOIN github_sync_secrets s ON s.project_id = p.id
-           WHERE p.github_sync_enabled = TRUE`,
-        )
-      ).rows
-    : await (async () => {
-        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-        const { data, error } = await supabaseAdmin
-          .from("projects")
-          .select(
-            "id, repo_url, branch, adr_path, git_pat, github_sync_enabled, github_sync_last_commit, created_by",
-          )
-          .eq("github_sync_enabled", true);
-        if (error) throw new Error(error.message);
-        return data ?? [];
-      })();
+  const rows = (
+    await localQuery<GitHubSyncProject>(
+      `SELECT p.id, p.repo_url, p.branch, p.adr_path, p.git_pat, p.github_sync_enabled,
+              s.secret AS github_webhook_secret, p.github_sync_last_commit, p.created_by
+       FROM projects p
+       LEFT JOIN github_sync_secrets s ON s.project_id = p.id
+       WHERE p.github_sync_enabled = TRUE`,
+    )
+  ).rows;
 
   const matching = rows.filter(
     (project) => repositoryKey(project.repo_url) === repositoryFullName.toLowerCase(),
   );
   if (matching.length > 1) throw new Error("Repository is configured for multiple projects.");
-  const project = matching[0];
-  if (!project || getDatabaseConfig().isLocal) return project ?? null;
-
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data: secret, error } = await supabaseAdmin
-    .from("github_sync_secrets")
-    .select("secret")
-    .eq("project_id", project.id)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return { ...project, github_webhook_secret: secret?.secret ?? null };
+  return matching[0] ?? null;
 }
 
 function verifySignature(rawBody: string, signature: string | null, secret: string) {
@@ -224,59 +200,27 @@ function sameAdrContent(existing: TrackedAdr, parsed: ReturnType<typeof parseAdr
 
 async function getSyncAuthor(project: GitHubSyncProject) {
   if (project.created_by) return project.created_by;
-  if (getDatabaseConfig().isLocal) {
-    const member = await localQueryOne<{ user_id: string }>(
-      `SELECT user_id FROM project_members
-       WHERE project_id = $1 ORDER BY (role = 'project_admin') DESC LIMIT 1`,
-      [project.id],
-    );
-    if (member) return member.user_id;
-    const admin = await localQueryOne<{ user_id: string }>(
-      "SELECT user_id FROM user_roles WHERE role = 'admin' LIMIT 1",
-    );
-    if (admin) return admin.user_id;
-  } else {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: member, error: memberError } = await supabaseAdmin
-      .from("project_members")
-      .select("user_id, role")
-      .eq("project_id", project.id)
-      .order("role", { ascending: true })
-      .limit(10);
-    if (memberError) throw new Error(memberError.message);
-    const projectAdmin = member?.find((entry) => entry.role === "project_admin");
-    if (projectAdmin) return projectAdmin.user_id;
-    const { data: admin, error: adminError } = await supabaseAdmin
-      .from("user_roles")
-      .select("user_id")
-      .eq("role", "admin")
-      .limit(1)
-      .maybeSingle();
-    if (adminError) throw new Error(adminError.message);
-    if (admin) return admin.user_id;
-  }
+  const member = await localQueryOne<{ user_id: string }>(
+    `SELECT user_id FROM project_members
+     WHERE project_id = $1 ORDER BY (role = 'project_admin') DESC LIMIT 1`,
+    [project.id],
+  );
+  if (member) return member.user_id;
+  const admin = await localQueryOne<{ user_id: string }>(
+    "SELECT user_id FROM user_roles WHERE role = 'admin' LIMIT 1",
+  );
+  if (admin) return admin.user_id;
   throw new Error("Add a project admin before enabling repository sync.");
 }
 
 async function getTrackedAdrs(projectId: string) {
-  if (getDatabaseConfig().isLocal) {
-    const result = await localQuery<TrackedAdr>(
-      `SELECT id, full_id, title, status, tags, context, decision, consequences, alternatives,
-              design_changes, major_impacts, references_data, repository_path, repository_deleted_at
-       FROM adrs WHERE project_id = $1`,
-      [projectId],
-    );
-    return result.rows;
-  }
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data, error } = await supabaseAdmin
-    .from("adrs")
-    .select(
-      "id, full_id, title, status, tags, context, decision, consequences, alternatives, design_changes, major_impacts, references_data, repository_path, repository_deleted_at",
-    )
-    .eq("project_id", projectId);
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const result = await localQuery<TrackedAdr>(
+    `SELECT id, full_id, title, status, tags, context, decision, consequences, alternatives,
+            design_changes, major_impacts, references_data, repository_path, repository_deleted_at
+     FROM adrs WHERE project_id = $1`,
+    [projectId],
+  );
+  return result.rows;
 }
 
 async function insertAdr(
@@ -285,56 +229,29 @@ async function insertAdr(
   repositoryPath: string,
   parsed: ReturnType<typeof parseAdrMarkdown>,
 ) {
-  if (getDatabaseConfig().isLocal) {
-    const inserted = await localQueryOne<{ id: string }>(
-      `INSERT INTO adrs
-       (project_id, title, tags, context, decision, consequences, alternatives,
-        design_changes, major_impacts, references_data, author_id, status, repository_path)
-       VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11, 'under_review', $12)
-       RETURNING id`,
-      [
-        project.id,
-        parsed.title,
-        parsed.tags,
-        parsed.context,
-        parsed.decision,
-        parsed.consequences,
-        parsed.alternatives,
-        JSON.stringify(parsed.design_changes),
-        JSON.stringify(parsed.major_impacts),
-        JSON.stringify(parsed.references_data),
-        authorId,
-        repositoryPath,
-      ],
-    );
-    if (!inserted) throw new Error(`Could not import repository ADR at ${repositoryPath}.`);
-    return inserted.id;
-  }
-
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data, error } = await supabaseAdmin
-    .from("adrs")
-    .insert({
-      project_id: project.id,
-      title: parsed.title,
-      tags: parsed.tags,
-      context: parsed.context,
-      decision: parsed.decision,
-      consequences: parsed.consequences,
-      alternatives: parsed.alternatives,
-      design_changes: parsed.design_changes,
-      major_impacts: parsed.major_impacts,
-      references_data: parsed.references_data,
-      author_id: authorId,
-      status: "under_review",
-      repository_path: repositoryPath,
-      adr_number: 0,
-      full_id: "PENDING",
-    })
-    .select("id")
-    .single();
-  if (error) throw new Error(error.message);
-  return data.id;
+  const inserted = await localQueryOne<{ id: string }>(
+    `INSERT INTO adrs
+     (project_id, title, tags, context, decision, consequences, alternatives,
+      design_changes, major_impacts, references_data, author_id, status, repository_path)
+     VALUES ($1, $2, $3::text[], $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11, 'under_review', $12)
+     RETURNING id`,
+    [
+      project.id,
+      parsed.title,
+      parsed.tags,
+      parsed.context,
+      parsed.decision,
+      parsed.consequences,
+      parsed.alternatives,
+      JSON.stringify(parsed.design_changes),
+      JSON.stringify(parsed.major_impacts),
+      JSON.stringify(parsed.references_data),
+      authorId,
+      repositoryPath,
+    ],
+  );
+  if (!inserted) throw new Error(`Could not import repository ADR at ${repositoryPath}.`);
+  return inserted.id;
 }
 
 async function updateTrackedAdr(
@@ -361,32 +278,26 @@ async function updateTrackedAdr(
     repository_deleted_at: null,
     status: nextStatus,
   };
-  if (getDatabaseConfig().isLocal) {
-    await localQuery(
-      `UPDATE adrs SET title = $1, tags = $2::text[], context = $3, decision = $4,
-       consequences = $5, alternatives = $6, design_changes = $7::jsonb, major_impacts = $8::jsonb,
-       references_data = $9::jsonb, repository_path = $10, repository_deleted_at = NULL, status = $11
-       WHERE id = $12`,
-      [
-        values.title,
-        values.tags,
-        values.context,
-        values.decision,
-        values.consequences,
-        values.alternatives,
-        JSON.stringify(values.design_changes),
-        JSON.stringify(values.major_impacts),
-        JSON.stringify(values.references_data),
-        values.repository_path,
-        values.status,
-        adr.id,
-      ],
-    );
-    return;
-  }
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { error } = await supabaseAdmin.from("adrs").update(values).eq("id", adr.id);
-  if (error) throw new Error(error.message);
+  await localQuery(
+    `UPDATE adrs SET title = $1, tags = $2::text[], context = $3, decision = $4,
+     consequences = $5, alternatives = $6, design_changes = $7::jsonb, major_impacts = $8::jsonb,
+     references_data = $9::jsonb, repository_path = $10, repository_deleted_at = NULL, status = $11
+     WHERE id = $12`,
+    [
+      values.title,
+      values.tags,
+      values.context,
+      values.decision,
+      values.consequences,
+      values.alternatives,
+      JSON.stringify(values.design_changes),
+      JSON.stringify(values.major_impacts),
+      JSON.stringify(values.references_data),
+      values.repository_path,
+      values.status,
+      adr.id,
+    ],
+  );
 }
 
 async function syncMarkdownFile(
@@ -462,36 +373,17 @@ async function syncMarkdownFile(
 
 async function archiveDeletedAdrs(adrIds: string[]) {
   if (adrIds.length === 0) return;
-  if (getDatabaseConfig().isLocal) {
-    await localQuery(
-      "UPDATE adrs SET repository_deleted_at = now() WHERE id = ANY($1::uuid[]) AND repository_deleted_at IS NULL",
-      [adrIds],
-    );
-    return;
-  }
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { error } = await supabaseAdmin
-    .from("adrs")
-    .update({ repository_deleted_at: new Date().toISOString() })
-    .in("id", adrIds)
-    .is("repository_deleted_at", null);
-  if (error) throw new Error(error.message);
+  await localQuery(
+    "UPDATE adrs SET repository_deleted_at = now() WHERE id = ANY($1::uuid[]) AND repository_deleted_at IS NULL",
+    [adrIds],
+  );
 }
 
 async function updateLastCommit(projectId: string, commit: string) {
-  if (getDatabaseConfig().isLocal) {
-    await localQuery("UPDATE projects SET github_sync_last_commit = $1 WHERE id = $2", [
-      commit,
-      projectId,
-    ]);
-    return;
-  }
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { error } = await supabaseAdmin
-    .from("projects")
-    .update({ github_sync_last_commit: commit })
-    .eq("id", projectId);
-  if (error) throw new Error(error.message);
+  await localQuery("UPDATE projects SET github_sync_last_commit = $1 WHERE id = $2", [
+    commit,
+    projectId,
+  ]);
 }
 
 async function syncRepository(project: GitHubSyncProject, after: string) {

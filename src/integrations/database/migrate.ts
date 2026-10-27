@@ -1,6 +1,6 @@
 /**
  * Migration helper for PostgreSQL
- * Applies SQL migrations from the supabase/migrations directory
+ * Applies SQL migrations from the migrations directory
  */
 
 import fs from 'fs';
@@ -165,7 +165,9 @@ async function executeMigration(filepath: string): Promise<void> {
 export async function runMigrations(migrationsDir?: string): Promise<void> {
   const dir =
     migrationsDir ||
-    path.resolve(__dirname, '../../../supabase/migrations');
+    (fs.existsSync(path.resolve(__dirname, '../../../migrations'))
+      ? path.resolve(__dirname, '../../../migrations')
+      : path.resolve(process.cwd(), 'migrations'));
 
   console.log(`📂 Looking for migrations in: ${dir}`);
 

@@ -8,13 +8,13 @@ import {
 } from "lucide-react";
 import { useState, useEffect } from "react";
 
-const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
 type Theme = "dark" | "light";
 
 function getTheme(): Theme {
   if (typeof window === "undefined") return "dark";
   return (localStorage.getItem("theme") as Theme) ?? "dark";
 }
+
 function applyTheme(t: Theme) {
   document.documentElement.classList.toggle("dark", t === "dark");
   document.documentElement.classList.toggle("light", t === "light");
@@ -25,27 +25,21 @@ function applyTheme(t: Theme) {
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
   beforeLoad: async () => {
-    if (IS_LOCAL) {
-      const token = localStorage.getItem("local_auth_token");
-      if (!token) throw redirect({ to: "/auth" });
-      try {
-        const parts = token.split(".");
-        if (parts.length !== 3) throw new Error("bad token");
-        const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-        if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
-          localStorage.removeItem("local_auth_token");
-          throw redirect({ to: "/auth" });
-        }
-        return { user: { id: payload.sub, email: payload.email } };
-      } catch {
+    const token = localStorage.getItem("local_auth_token");
+    if (!token) throw redirect({ to: "/auth" });
+    try {
+      const parts = token.split(".");
+      if (parts.length !== 3) throw new Error("bad token");
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+      if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
         localStorage.removeItem("local_auth_token");
         throw redirect({ to: "/auth" });
       }
+      return { user: { id: payload.sub, email: payload.email } };
+    } catch {
+      localStorage.removeItem("local_auth_token");
+      throw redirect({ to: "/auth" });
     }
-    const { supabase } = await import("@/integrations/supabase/client");
-    const { data, error } = await supabase.auth.getUser();
-    if (error || !data.user) throw redirect({ to: "/auth" });
-    return { user: data.user };
   },
   component: Shell,
 });
@@ -88,12 +82,7 @@ function Shell() {
   async function signOut() {
     // Clear ALL cached queries so the next user sees a clean slate immediately
     queryClient.clear();
-    if (IS_LOCAL) {
-      localStorage.removeItem("local_auth_token");
-    } else {
-      const { supabase } = await import("@/integrations/supabase/client");
-      await supabase.auth.signOut();
-    }
+    localStorage.removeItem("local_auth_token");
     navigate({ to: "/auth", replace: true });
   }
 

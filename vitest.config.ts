@@ -15,7 +15,7 @@ export default defineConfig({
       reporter: ["text", "lcov", "json", "html"],
       reportsDirectory: "./coverage",
       include: ["src/lib/**/*.ts", "src/integrations/**/*.ts"],
-      exclude: ["src/**/*.d.ts", "src/integrations/supabase/types.ts"],
+      exclude: ["src/**/*.d.ts"],
     },
   },
 });

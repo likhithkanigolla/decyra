@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   app:
@@ -15,9 +13,6 @@ services:
       LOCAL_DEV_MODE: ${LOCAL_DEV_MODE}
 
       DATABASE_URL: ${DATABASE_URL}
-
-      SUPABASE_URL: ${SUPABASE_URL:-http://placeholder.supabase.co}
-      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-placeholder_key}
 
       UV_THREADPOOL_SIZE: ${UV_THREADPOOL_SIZE:-16}
       POSTGRES_POOL_MAX: ${POSTGRES_POOL_MAX:-10}

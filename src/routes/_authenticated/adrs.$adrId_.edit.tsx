@@ -25,8 +25,8 @@ function EditAdr() {
   const [form, setForm] = useState<AdrFormData>(DEFAULT_ADR_FORM);
   const currentFormRef = useRef(form);
   currentFormRef.current = form;
-  const currentStatusRef = useRef<string | undefined>();
-  const relationshipsRevisionRef = useRef<string | undefined>();
+  const currentStatusRef = useRef<string | undefined>(undefined);
+  const relationshipsRevisionRef = useRef<string | undefined>(undefined);
 
   const { data } = useQuery({
     queryKey: ["adr", adrId],

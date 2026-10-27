@@ -12,8 +12,6 @@ import { Toaster } from "sonner";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 
-const IS_LOCAL = import.meta.env.VITE_DATABASE_TYPE === "postgres";
-
 // ── Theme management ──────────────────────────────────────────────────────────
 
 type Theme = "dark" | "light";
@@ -110,26 +108,7 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  const router = useRouter();
   const [theme] = useState<Theme>(getStoredTheme);
-
-  useEffect(() => {
-    // Only set up Supabase auth listener in Supabase mode
-    if (IS_LOCAL) return;
-
-    let unsub: (() => void) | undefined;
-
-    import("@/integrations/supabase/client").then(({ supabase }) => {
-      const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-        if (event !== "SIGNED_IN" && event !== "SIGNED_OUT" && event !== "USER_UPDATED") return;
-        router.invalidate();
-        if (event !== "SIGNED_OUT") queryClient.invalidateQueries();
-      });
-      unsub = () => sub.subscription.unsubscribe();
-    });
-
-    return () => { unsub?.(); };
-  }, [router, queryClient]);
 
   return (
     <QueryClientProvider client={queryClient}>

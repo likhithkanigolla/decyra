@@ -1,7 +1,5 @@
 /**
- * Local authentication helpers for PostgreSQL mode.
- * Used ONLY when DATABASE_TYPE=postgres.
- * Never imported in Supabase mode.
+ * Local authentication helpers for PostgreSQL.
  *
  * Uses Node's built-in `crypto` module for:
  *   - Password hashing: PBKDF2-SHA256 (no extra dependency)

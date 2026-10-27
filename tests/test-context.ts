@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import { getMyContext } from '../src/lib/api/decyra.functions.ts';
-import { attachSupabaseAuth } from '../src/integrations/supabase/auth-attacher.ts';
 
 // We can't directly call getMyContext as it's a serverFn, but we can do a fetch to the dev server
 async function test() {

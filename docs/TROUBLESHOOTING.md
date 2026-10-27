@@ -94,22 +94,17 @@ npm run db:reset
 
 ### 5. Migrations Not Applying
 
-**Problem**: SQL migrations in `supabase/migrations/` not being applied
+**Problem**: SQL migrations in `migrations/` not being applied
 
 **Solutions**:
 
 ```bash
 # View migration status
-docker-compose exec postgres psql -U postgres -d decyra -c "SELECT * FROM migrations;"
+docker compose exec postgres psql -U postgres -d decyra -c "SELECT * FROM migrations;"
 
-# Manually apply migrations
-docker-compose exec postgres psql -U postgres -d decyra -f /docker-entrypoint-initdb.d/migration_file.sql
-
-# Or rebuild containers (this auto-applies migrations)
-npm run db:reset
+# Run migrations using the migration script
+npm run db:migrate
 ```
-
-**Note**: Migrations in `supabase/migrations/` are only applied on first container startup. Use the manual approach for subsequent migrations.
 
 ---
 
@@ -134,25 +129,19 @@ cp .env.example .env
 
 ---
 
-### 7. Supabase Client Throws Error
+### 7. Authentication or JWT Errors
 
-**Problem**: Supabase authentication or connection error with `DATABASE_TYPE=supabase`
+**Problem**: JWT token verification fails or 401 Unauthorized
 
 **Solutions**:
 
 ```bash
-# Verify environment variables are set
-echo $SUPABASE_URL
-echo $SUPABASE_PUBLISHABLE_KEY
+# Verify POSTGRES_JWT_SECRET is set in .env
+grep POSTGRES_JWT_SECRET .env
 
-# If using Vite, variables should be exported:
-echo $VITE_SUPABASE_URL
-echo $VITE_SUPABASE_PUBLISHABLE_KEY
+# If password was forgotten, reset it via CLI:
+npm run reset-password <email-or-username> <new-password>
 ```
-
-**For development**:
-- Ensure `.env` has `VITE_*` prefixed variables for client-side code
-- Ensure `.env` has non-prefixed variables for server-side code
 
 ---
 
@@ -240,53 +229,28 @@ npm install pg @types/pg
 
 ---
 
-### 12. Switching Between Databases
-
-**Problem**: Code breaks when switching `DATABASE_TYPE`
-
-**Solutions**:
-
-1. Use the adapter pattern for database-agnostic code:
-   ```typescript
-   import { isSupabase, isLocal } from '@/integrations/database/adapter';
-   ```
-
-2. Ensure both databases have the same schema/migrations
-
-3. Test the new database before switching
-
-4. Verify environment variables are correct:
-   ```bash
-   npm run db:setup  # For local PostgreSQL
-   # Or update .env with Supabase credentials
-   ```
-
----
-
-### 13. Data Lost After Reset
+### 12. Data Lost After Reset
 
 **Problem**: Running `npm run db:reset` deleted all data
 
 **Solutions**:
 
-This is expected behavior. To avoid data loss:
+This is expected behavior because `db:reset` cleans volumes. To avoid data loss:
 
 1. **Use backups**:
    ```bash
    # Backup PostgreSQL
-   docker-compose exec postgres pg_dump -U postgres decyra > backup.sql
+   docker compose exec postgres pg_dump -U postgres decyra > backup.sql
    
    # Restore from backup
-   docker-compose exec postgres psql -U postgres decyra < backup.sql
+   docker compose exec postgres psql -U postgres decyra < backup.sql
    ```
 
 2. **Don't use `db:reset` in production**
 
-3. **Use managed Supabase for production backups**
-
 ---
 
-### 14. Docker Daemon Not Running
+### 13. Docker Daemon Not Running
 
 **Problem**: `Cannot connect to Docker daemon`
 
@@ -304,7 +268,7 @@ docker ps
 
 ---
 
-### 15. Slow Performance on M1/M2 Mac
+### 14. Slow Performance on M1/M2 Mac
 
 **Problem**: Docker containers are very slow on Apple Silicon
 
@@ -334,24 +298,23 @@ docker ps
 
 1. **Check logs**:
    ```bash
-   docker-compose logs -f postgres
-   docker-compose logs -f pgadmin
+   docker compose logs -f postgres
    ```
 
 2. **Enter database directly**:
    ```bash
-   docker-compose exec postgres psql -U postgres -d decyra
+   docker compose exec postgres psql -U postgres -d decyra
    ```
 
 3. **Check PostgreSQL status**:
    ```bash
-   docker-compose exec postgres pg_isready -U postgres
+   docker compose exec postgres pg_isready -U postgres
    ```
 
 4. **View all Docker containers**:
    ```bash
    docker ps -a
-   docker-compose ps
+   docker compose ps
    ```
 
 5. **Environmental debugging**:
@@ -359,7 +322,6 @@ docker ps
    # Check environment variables
    env | grep DATABASE
    env | grep POSTGRES
-   env | grep SUPABASE
    ```
 
 ---
