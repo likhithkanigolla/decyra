@@ -17,6 +17,9 @@ COPY . .
 ENV NODE_ENV=production
 ENV VITE_DATABASE_TYPE=postgres
 
+# Give Node.js more heap memory during compilation
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+
 # Build application (generates .output for node-server preset) and compile the create-admin script
 RUN npm run build && \
     ./node_modules/.bin/esbuild scripts/create-admin.ts --bundle --platform=node --format=esm --packages=external --outfile=.output/create-admin.mjs
