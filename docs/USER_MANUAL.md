@@ -20,20 +20,29 @@ This manual provides an end-to-end operational guide for developers, architects,
    - [Starting an ADR Draft](#starting-an-adr-draft)
    - [ADR Structure & Required Sections](#adr-structure--required-sections)
    - [Split-Pane Editor & Live Markdown Preview](#split-pane-editor--live-markdown-preview)
-   - [Real-Time Duplicate Detection](#real-time-duplicate-detection)
+   - [Context-Aware Similarity Checking (On-Submit Modal)](#context-aware-similarity-checking-on-submit-modal)
    - [Collaborative Editing](#collaborative-editing)
 6. [Review, Governance & Publishing Workflow](#6-review-governance--publishing-workflow)
    - [The ADR State Machine](#the-adr-state-machine)
    - [Submitting for Review](#submitting-for-review)
-   - [Discussions & Comments](#discussions--comments)
-   - [Review Decisions (Approve or Request Changes)](#review-decisions-approve-or-request-changes)
-   - [Publishing & Version Snapshots](#publishing--version-snapshots)
-   - [Editing Published ADRs](#editing-published-adrs)
+   - [Multiple Reviewers Request & Locking Workflow](#multiple-reviewers-request--locking-workflow)
+   - [Revoking Review Requests & Audit Logging](#revoking-review-requests--audit-logging)
+   - [Discussions, @ User Mentions & # ADR References](#discussions--user-mentions---adr-references)
+   - [Sequential Keyboard Navigation (Arrow Keys)](#sequential-keyboard-navigation-arrow-keys)
+   - [Personal Review Decisions & Approval Revocation](#personal-review-decisions--approval-revocation)
+   - [Admin Final Decisions & Mandatory Override Rationale](#admin-final-decisions--mandatory-override-rationale)
+   - [Activity & Edit Timeline (Audit Trail)](#activity--edit-timeline-audit-trail)
+   - [Publishing Accepted & Rejected Decisions to Git](#publishing-accepted--rejected-decisions-to-git)
+   - [Immutability of Finalized ADRs & The Supersede Pattern](#immutability-of-finalized-adrs--the-supersede-pattern)
 7. [Git Integration & Two-Way Sync](#7-git-integration--two-way-sync)
    - [Importing ADRs from a Git Repository](#importing-adrs-from-a-git-repository)
    - [ADR Identifier Format: `[Project code-ADR-XXX]`](#adr-identifier-format-project-code-adr-xxx)
    - [GitHub Two-Way Push Sync](#github-two-way-push-sync)
-8. [Relationship Graph & Dependency Mapping](#8-relationship-graph--dependency-mapping)
+8. [Relationship Graph & Visual Dependency Editor](#8-relationship-graph--visual-dependency-editor)
+   - [Directional Arrows & Relationship Semantics](#directional-arrows--relationship-semantics)
+   - [Interactive Visual Graph Editing (Drag-to-Connect)](#interactive-visual-graph-editing)
+   - [Custom Layouts & Persistence](#custom-layouts--persistence)
+   - [Light Mode & Dark Mode High-Contrast Styling](#light-mode--dark-mode-high-contrast-styling)
 9. [Project Data Archives (Export & Import)](#9-project-data-archives-export--import)
 10. [Global Search & Knowledge Discovery](#10-global-search--knowledge-discovery)
 
@@ -180,8 +189,12 @@ Decyra follows the industry-standard Architecture Decision Record template:
 
 ---
 
-### Real-Time Duplicate Detection
-While you type the ADR title and context, Decyra's background indexing checks existing ADRs across all projects in the workspace. If a similar decision already exists, a warning banner alerts you with clickable links to the existing records, preventing fragmented or duplicated architectural guidelines.
+### Context-Aware Similarity Checking (On-Submit Modal)
+
+To prevent fragmented or conflicting architectural guidelines across the project, Decyra evaluates new ADR submissions for similarity against existing records:
+- **Intelligent Scope & Semantic Analysis**: Instead of intrusive warnings while typing, similarity checking evaluates the entire document—including the **Title**, **Context**, **Decision**, and **Consequences**—scoped within the current project while filtering out common grammatical and system stop words.
+- **On-Submit Confirmation Modal**: When you click **Save Draft** or **Submit for Review**, if existing ADRs have substantial similarity (score $\ge 50\%$), Decyra opens an interactive warning dialog.
+- **Side-by-Side Review**: The dialog presents matching ADRs with their identifier, title, status, and similarity score percentage. Authors can inspect existing decisions to confirm whether their proposal is genuinely new, or cancel to avoid redundant engineering efforts.
 
 ---
 
@@ -198,21 +211,20 @@ Multiple team members can open the same draft ADR simultaneously. Decyra uses re
 stateDiagram-v2
     [*] --> Draft: Author creates draft
     Draft --> Under_Review: Submit for review
-    Under_Review --> Draft: Edit / Request Changes
-    Under_Review --> Approved: Required approvals met
-    Approved --> Published: Project Admin publishes (Accepted)
-    Under_Review --> Rejected: Decision rejected
-    Rejected --> Published: Project Admin publishes (Rejected decision)
-    Published --> Draft: Edit published ADR (bumps version)
-    Published --> Superseded: Superseded by newer ADR
+    Under_Review --> Draft: Author edits draft
+    Under_Review --> Approved: Team approvals or Admin Final Approve
+    Under_Review --> Rejected: Team rejections or Admin Final Reject
+    Approved --> Published: Published to Git as Accepted Record
+    Rejected --> Published: Published to Git as Rejected Record
+    Published --> Superseded: Superseded by new ADR (immutable record)
 ```
 
-1. **Draft**: Active writing state. Authors can freely modify content.
+1. **Draft**: Active authoring state. Authors can freely modify content.
 2. **Under Review**: Draft is frozen and submitted for team review.
-3. **Approved**: The required number of positive approvals (configured per project) has been achieved.
-4. **Published**: Immutable versioned record (`v1`). Decyra formats the Markdown and commits it to Git.
-5. **Superseded**: Deprecated by a newer architectural decision.
-6. **Rejected**: Decision evaluated but declined by the engineering team. **Rejected ADRs can be published to Git** to permanently document why an architectural approach was declined, preventing teams from repeating evaluated trade-offs.
+3. **Approved**: The required number of positive approvals has been achieved, or an admin issued a Final Approval.
+4. **Rejected**: Team or admin declined the decision.
+5. **Published**: Immutable, permanent historical record committed directly to your Git repository.
+6. **Superseded**: Deprecated by a newer architectural decision via a formal supersede link.
 
 ---
 
@@ -221,66 +233,116 @@ When drafting is complete, click **Submit for Review**. This transitions the sta
 
 ---
 
-### Discussions, @ Mentions & Comment Resolution
-- On the ADR detail page, use the **Discussion** section to ask questions or discuss trade-offs.
+### Multiple Reviewers Request & Locking Workflow
+
+Decyra allows requesting formal peer reviews from multiple team members simultaneously:
+1. **Requesting Reviewers**:
+   - In the right sidebar under **Reviewers**, choose any project engineer or administrator from the dropdown to assign them as a requested reviewer.
+   - You can add multiple reviewers to an ADR.
+   - Each reviewer receives an in-app notification and an activity log entry is recorded in the ADR timeline.
+2. **Review Status Badges**:
+   - Every requested reviewer is displayed with their avatar, name, and live review status:
+     - 🕒 **Pending**: Awaiting their review vote.
+     - ✅ **Approved**: The reviewer has submitted an approval.
+     - ❌ **Changes Req**: The reviewer has requested modifications or rejected the decision.
+3. **Review Decision Lock (Hard Blocker)**:
+   - **Critical Rule**: As long as **any requested reviewer** has a status of **Pending**, **no one can make the final call—not even platform or project administrators**.
+   - While reviews are pending, the **Final Approve**, **Final Reject**, and **Publish** buttons are strictly locked with a warning notice:
+     > ⚠️ **Decision Locked by Pending Reviews**: Waiting for `@reviewer`. Till they make their decision or an admin/requester revokes their review request, no final decision can be made.
+4. **Automatic Review Completion**:
+   - When a requested reviewer submits their review (**Approve** or **Reject**), their request status automatically updates from `Pending` to `Completed`, unlocking the workflow once all requested reviewers have voted.
+
+---
+
+### Revoking Review Requests & Audit Logging
+
+If a requested reviewer is unavailable (e.g., on leave, reassigned, or the review is no longer required), their review request can be revoked:
+- **Who Can Revoke**:
+  - The user who originally requested the review
+  - Platform Administrators
+  - Project Administrators
+  - The ADR Author
+  - The Reviewer themselves
+- **How to Revoke**:
+  - Click the **✕** button next to the reviewer in the **Reviewers** sidebar card.
+  - Revoking the request immediately removes the pending lock and allows final decisions to proceed.
+- **Audit Logging**:
+  - Revocation is strictly audited: Decyra automatically posts a timeline comment (`📋 Revoked review request for @reviewer by @user.`) and logs a permanent `review_request_revoked` event in the Activity Timeline.
+
+---
+
+### Discussions, @ User Mentions & # ADR References
+
 - **Tagging Team Members with `@`**: Type `@` in any comment to open an autocomplete popup listing project team members. Selecting a user inserts `@username`. Mentioned users receive real-time notifications in their notification inbox with direct links to the ADR.
+- **Referencing ADRs with `#`**: Type `#` in any comment to open an interactive autocomplete popup of ADRs in the current project. Selecting an ADR inserts `#PROJECT-ADR-XXX: Title`. Readers can click the reference to navigate directly to the referenced decision.
 - **Comment Resolution**: Any team member can resolve actionable discussion feedback by clicking **Resolve**. Resolved comments display a green badge showing who resolved the comment, while keeping discussion histories intact. Resolved comments can be reopened at any time.
 
 ---
 
-### Assigning ADR Reviewers
-- In the right sidebar under **Assigned Reviewer**, project members or administrators can assign an engineer to review the ADR.
-- Assigning a reviewer posts a system timeline note to the ADR discussion and sends a targeted notification to the assigned reviewer.
-- The user's **Dashboard** highlights ADRs where they are the assigned reviewer, showing which decisions require their active review.
+### Sequential Keyboard Navigation (Arrow Keys)
+
+When reviewing decisions across a project, Decyra provides fast sequential navigation:
+- **Previous / Next ADR Buttons**: The page header displays quick navigation buttons (`←` and `→`) along with your current index (`ADR X of Y`).
+- **Keyboard Shortcuts**: Press the left arrow key (`←`) to navigate to the previous ADR, or the right arrow key (`→`) to advance to the next ADR. Shortcut navigation is automatically suspended when typing in input or comment fields.
 
 ---
 
-### Review Decisions & Approval Revocation
-- Reviewers click **Approve** to record support, or **Request Changes** to request modifications.
-- Decyra displays real-time progress:
-  - Progress bar showing `Current Approvals / Required Approvals`.
-  - List of approving team members with timestamps.
-  - List of reviewers requesting changes.
-- **Manual Revocation**: If a reviewer previously approved an ADR and wishes to withdraw their approval (e.g., pending further discussion), they can click **Revoke Approval**.
-- **Automatic Revocation on Edits**: When an ADR is edited or modified after approvals have been granted, Decyra automatically revokes existing approvals and resets the status to `under_review` (or `draft` for published decisions). This guarantees that reviewers re-verify any new changes before a decision is finalized.
+### Personal Review Decisions & Approval Revocation
+
+Every project member can participate in peer reviews:
+- **Personal Decision**:
+  - Click **Approve** to record support, or **Reject** to request modifications.
+  - Reviewers can include an optional note detailing their feedback.
+- **Revoking Personal Decisions**:
+  - If a reviewer wishes to withdraw their approval or rejection, they can click **Revoke Decision**.
+  - Withdrawing a decision immediately decrements the approval count and is timestamped in the audit timeline (e.g., `Withdrew approval at 04:15 PM`).
 
 ---
 
-### Activity & Edit Timeline (Who Edited What and When)
+### Admin Final Decisions & Mandatory Override Rationale
+
+Decyra cleanly separates peer review feedback from executive architectural governance:
+- **Two Separate Decision Panels**:
+  1. **Personal Decision**: Used by all project members (including admins in their individual engineering capacity) to cast personal review votes.
+  2. **Admin Decision**: Exclusively visible to **Project Admins** and **Platform Admins** to issue authoritative final rulings.
+- **Authoritative Approval & Rejection**:
+  - Admins can click **Final Approve** or **Final Reject** to authoritatively set the ADR status, irrespective of the current vote count.
+  - If an admin personally voted to reject an ADR, their personal vote remains permanently recorded as `Rejected` in the review audit trail, while their administrative decision notes `(Overrode Personal Rejection)`.
+- **Mandatory Rationale for Overrides**:
+  - When an admin executes an administrative override (e.g., approving an ADR with insufficient approvals, overriding existing rejections, or overriding their own personal rejection), entering a **detailed rationale comment (at least 15 characters)** is strictly mandatory.
+  - Click **Auto-draft rationale** to populate a structured template summarizing current vote counts and required justifications.
+
+---
+
+### Activity & Edit Timeline (Audit Trail)
+
 Decyra provides a comprehensive, immutable audit log for every ADR in the **Activity & Edit Timeline** section:
 - **Who Edited**: Displays the actor's avatar, full name, and `@username`. If changes originated from Git repository synchronization, it indicates `Git Sync`.
 - **What Was Edited**: Clearly flags which specific sections were modified using highlighted badges (e.g., `Title`, `Context`, `Decision`, `Consequences`, `Alternatives`, `Tags`, `Design Changes`, `Major Impacts`, `References`).
 - **When**: Records exact timestamps (e.g., `Oct 29, 2026, 4:21 PM`) for full auditability and traceability.
-- **Status & Review Milestones**: Captures lifecycle milestones including draft creation, status transitions (e.g., `draft → under_review`), reviewer assignments, approvals, change requests, comment resolutions, and version publishing.
+- **Status & Review Milestones**: Captures lifecycle milestones including draft creation, status transitions, reviewer requests, request revocations, approvals, change requests, comment resolutions, and version publishing.
 - **Git Commit Linkage**: When ADRs are published or synchronized from Git, the timeline records the Git commit hash and repository path.
 
 ---
 
-### Publishing & Version Snapshots
-- Once approvals reach the project threshold, the ADR enters `Approved` state.
-- A **Project Admin** or **Platform Admin** clicks **Publish ADR**.
-- Decyra compiles the record into standardized Markdown:
-  ```markdown
-  # [PROJECT_CODE-ADR-XXX]: Title
-  
-  **Status:** published
-  **Date:** YYYY-MM-DD
-  **Tags:** tag1, tag2
-  
-  ## Context
-  ...
-  ```
-- If a Git repository is configured, Decyra commits the file directly to your branch.
-- The snapshot is saved as `v1` (or `v2`, `v3`).
+### Publishing Accepted & Rejected Decisions to Git
+
+- **Publishing Accepted Decisions**: Once an ADR is approved, a Project Admin or Platform Admin clicks **Publish ADR to Git**. Decyra compiles the decision into standardized Markdown and pushes it to the configured branch.
+- **Publishing Rejected Decisions**: In modern software engineering, documenting *why* an architectural alternative was rejected is just as vital as recording what was accepted. Admins can click **Publish Rejected ADR** to push rejected proposals to Git, creating a permanent historical record that prevents future teams from repeating evaluated trade-offs.
 
 ---
 
-### Editing Published ADRs
-Published ADRs cannot be directly modified in place. Clicking **Edit** on a published ADR:
-1. Bumps the ADR back to `Draft` mode for revision.
-2. Retains the previous version snapshot in the **Version History** tab.
-3. Automatically logs the edited sections and actor to the **Activity & Edit Timeline**.
-4. Re-submits the updated proposal through the review and approval workflow before publishing the next version (`v2`).
+### Immutability of Finalized ADRs & The Supersede Pattern
+
+**Why Finalized ADRs Cannot Be Overwritten or Edited:**
+An Architecture Decision Record is a historical document that captures a specific decision made at a specific point in time under specific constraints. Altering a finalized or published document destroys the historical context of why the system was designed the way it was.
+
+Consequently, Decyra enforces strict **immutability** on published ADRs:
+- Published records cannot be edited, overwritten, or republished in place.
+- To change or replace an architectural decision, use the industry-standard **Supersede Workflow**:
+  1. **Create a New ADR**: Author a new decision document explaining the new context, requirements, and reasons for the change (e.g., `0015-use-postgresql.md`).
+  2. **Link the Documents**: In the **Relationships** section of the new ADR, create a `supersedes` link pointing to the older ADR (e.g., `Supersedes ADR-0004`).
+  3. **Update Status**: The older ADR transitions its status from `published` to `superseded` with a direct link to the successor decision.
 
 ---
 

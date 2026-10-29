@@ -16,10 +16,16 @@ Built on TanStack Start (React SSR), PostgreSQL, and Git, Decyra empowers engine
 
 - **Split-Pane ADR Editor**: Rich Markdown editor with live preview, syntax highlighting, and standard ADR sections (Context, Decision, Consequences, Alternatives, Design Changes, Impacts, and References).
 - **Flexible Authentication**: Sign in using **either your Email address or Username** + password.
-- **Project Governance & Isolation**: Group architectural decisions by project domain. Control visibility and editing rights through role-based access control.
-- **Strict Review State Machine**: Transition ADRs through formal stages:
-  $$\text{Draft} \longrightarrow \text{Under Review} \longrightarrow \text{Approved} \longrightarrow \text{Published}$$
-- **Multi-Approval Thresholds**: Configure the required number of approvals per project. Reviewers can formally **Approve** or **Request Changes**.
+- **Multiple Reviewers & Review Blocker**: Request formal reviews from multiple teammates. Until all requested reviewers submit their decision or their request is explicitly revoked, **no one (including platform and project admins) can make the final call or publish the ADR**.
+- **Review Request Revocation & Full Audit Trail**: Requesters, reviewers, or admins can revoke review requests when needed (e.g., reviewer on leave), immediately unblocking decisions with full logging in timeline events and discussion comments.
+- **Independent Personal Review & Administrative Decisions**: Team members submit peer votes (**Approve** or **Request Changes**). Project/Platform Admins have dedicated **Admin Final Decision** controls (**Final Approve** or **Final Reject**). Personal review stances remain preserved in the audit log even if overridden.
+- **Mandatory Rationale for Overrides**: When an admin overrides standard review criteria or existing team rejections, providing a detailed rationale (at least 15 characters) is strictly enforced, with an **Auto-draft rationale** helper.
+- **Publishing Accepted & Rejected Decisions**: Both Accepted and Rejected ADRs can be published directly to Git to permanently document accepted architectural patterns as well as rejected alternatives.
+- **Strict Immutability & Supersede Workflow**: Finalized and published ADRs are immutable historical records that cannot be overwritten or modified in place. Evolution of architecture follows the industry-standard **supersede** workflow (`Supersedes ADR-XXX`).
+- **Interactive Visual Graph Canvas & Diagrammer**: Drag-to-connect visual dependency mapping (`depends_on`, `supersedes`, `replaced_by`, `affects`, `conflicts_with`, `related_to`) powered by React Flow with bidirectional arrow semantics, click-to-edit connection modal, persistent custom layouts, and high-contrast light/dark themes.
+- **Discussion Mentions (`@` and `#`)**: Tag teammates using `@username` and reference other ADRs in discussion comments using `#` with interactive search autocompletion.
+- **Keyboard & Sequential ADR Navigation**: Seamlessly navigate through project decisions with header **Previous / Next ADR** buttons and keyboard arrow shortcuts (`←` / `→`).
+- **Smart On-Submit Similarity Checking**: Context-aware similarity scoring evaluates complete title, context, and consequences within the project, presenting an interactive confirmation modal if similar ADRs already exist before creating duplicates.
 - **Project Deletion Protection (3 Approvals & Revocation)**: Prevents accidental or unauthorized project deletion by requiring **at least 3 separate approvals** from platform admins or project engineers, with full support for revoking approvals at any time.
 - **Git Repository Integration**:
   - Automatically commits and pushes published ADRs to your Git branch.
@@ -27,9 +33,7 @@ Built on TanStack Start (React SSR), PostgreSQL, and Git, Decyra empowers engine
   - **Mandatory Git Token validation** and **automated repository migration** when changing repository URLs, branches, or folders.
 - **Repository ADR Import**: Import existing Markdown ADRs from any Git repository. Decyra validates and filters ADRs using the standard `[Project code-ADR-XXX]` format, automatically extracts clean titles, and preserves sequential numbering.
 - **GitHub Two-Way Push Sync**: Configure push webhooks to automatically sync Markdown updates from GitHub directly into Decyra drafts.
-- **Interactive Decision Graph**: Visual dependency mapping (`depends_on`, `supersedes`, `conflicts_with`, `related_to`) powered by React Flow with auto-layout and cross-project links.
 - **Real-Time Collaborative Editing**: Real-time collaborative drafting with live collaborator presence powered by Yjs.
-- **Duplicate Detection**: Real-time keyword analysis warns authors if a similar decision already exists across the organization, preventing redundant engineering efforts.
 - **Data Archives**: Export and import self-contained JSON project archives for moving records between environments.
 
 ---
@@ -119,22 +123,28 @@ npm run reset-password <email-or-username> <new-password>
 ### 3. Writing and Reviewing ADRs
 - Click **New ADR** in your project workspace.
 - Complete the required sections (**Context**, **Decision**, and **Consequences**).
+- On submit, Decyra checks for existing similar ADRs in the project; if detected, a modal lets you review them before proceeding.
 - When ready for team feedback, click **Submit for Review**.
-- Assigned project engineers review the proposal, discuss in the comment thread, and click **Approve** or **Request Changes**.
+- Use the **Reviewers** sidebar card to request reviews from multiple engineers. While any requested review is pending, final decisions and publishing are locked.
+- Engineers submit **Approve** or **Request Changes**, with support for revoking personal decisions with timestamped audit logs.
+- In discussions, tag users with `@username` and link other decisions with `#ADR-ID`.
+- Navigate sequentially through decisions with header arrows or keyboard keys (`←` / `→`).
 
-### 4. Publishing & Git Sync
-- Once approvals reach the required threshold, a Project Admin clicks **Publish ADR**.
-- Decyra compiles the ADR into a permanent Markdown snapshot (`v1`) and automatically commits it to your Git repository.
-- If changes are needed in the future, clicking **Edit** on a published ADR increments the revision target to `v2` and initiates a new review cycle.
+### 4. Admin Final Decisions & Publishing to Git
+- Project and Platform Admins can issue **Final Approve** or **Final Reject** decisions. Overrides require a mandatory 15-character rationale.
+- Both Accepted and Rejected ADRs can be published to Git by an admin.
+- Once published, an ADR is an immutable record. To alter architectural direction, create a new ADR that supersedes the published record.
 
 ### 5. Importing Existing ADRs from Git
 - Open your project and click **Import ADRs**.
 - Point to your repository branch and directory (use `/` for repo root).
 - Decyra verifies each file against the `[Project code-ADR-XXX]` format (e.g. `[DEC-ADR-001]`), preserves sequential IDs, cleans duplicate headings, and safely ignores non-ADR files like `README.md`.
 
-### 6. Mapping Relationships & Exploring the Graph
-- Link related decisions from the **Relationships** sidebar (`depends_on`, `supersedes`, `conflicts_with`).
-- Click **Graph** in the project header to view an interactive auto-layout network of all architecture decisions.
+### 6. Interactive Relationship Graph
+- Open **Graph** in the project header to view decisions as an interactive network diagram.
+- Drag from connection dots to establish relationships (`depends_on`, `supersedes`, `replaced_by`, `affects`, `conflicts_with`).
+- Click any edge to modify the relationship type, swap direction, or delete it.
+- Reposition cards and click **Save Layout** to preserve your custom architectural visual arrangement.
 
 ---
 
