@@ -461,7 +461,7 @@ export const getProject = createServerFn({ method: "POST" })
       await Promise.all([
         pgQuery(
           `SELECT pm.id, pm.role, pm.user_id,
-                  pr.full_name, pr.email, pr.avatar_url
+                  pr.full_name, pr.username, pr.email, pr.avatar_url
            FROM project_members pm
            LEFT JOIN profiles pr ON pr.id = pm.user_id
            WHERE pm.project_id = $1`,
@@ -493,7 +493,7 @@ export const getProject = createServerFn({ method: "POST" })
       id: m.id,
       role: m.role,
       user_id: m.user_id,
-      profiles: { full_name: m.full_name, email: m.email, avatar_url: m.avatar_url },
+      profiles: { full_name: m.full_name, username: m.username, email: m.email, avatar_url: m.avatar_url },
     }));
     const isAdmin = (rolesRow.rows ?? []).some((r: any) => r.role === "admin");
 
@@ -1035,9 +1035,17 @@ export const listProfiles = createServerFn({ method: "POST" })
       full_name: string;
       is_locked: boolean;
       role: "admin" | "member";
+      projects?: Array<{ id: string; name: string; code: string; role: string }>;
     }>(`
       SELECT p.id, p.email, p.username, p.full_name, p.is_locked,
-             COALESCE((SELECT ur.role FROM user_roles ur WHERE ur.user_id = p.id AND ur.role = 'admin' LIMIT 1), 'member') as role
+             COALESCE((SELECT ur.role FROM user_roles ur WHERE ur.user_id = p.id AND ur.role = 'admin' LIMIT 1), 'member') as role,
+             COALESCE(
+               (SELECT json_agg(json_build_object('id', prj.id, 'name', prj.name, 'code', prj.code, 'role', pm.role))
+                FROM project_members pm
+                JOIN projects prj ON prj.id = pm.project_id
+                WHERE pm.user_id = p.id),
+               '[]'::json
+             ) as projects
       FROM profiles p
       ORDER BY p.full_name
     `);
@@ -1707,10 +1715,11 @@ export async function getAdrService(userId: string, data: { id: string }) {
       ]),
       pgQuery("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
       pgQuery(
-        `SELECT pm.user_id, pm.role, pr.full_name, pr.username, pr.email, pr.avatar_url
+        `SELECT pm.user_id, pm.role, pr.full_name, pr.username, pr.email, pr.avatar_url, pr.is_locked
          FROM project_members pm
          JOIN profiles pr ON pr.id = pm.user_id
          WHERE pm.project_id = $1
+           AND NOT COALESCE(pr.is_locked, false)
          ORDER BY pr.full_name ASC`,
         [adr.proj_id],
       ),
@@ -2368,6 +2377,18 @@ export async function addCommentService(
   if (!adr) throw new Error("ADR not found.");
   assertDraftAdrOwner(adr, userId);
 
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, adr.project_id],
+  );
+  if (!isAdmin && !member) {
+    throw new Error("Only project members or platform admins can comment on ADRs.");
+  }
+
   const inserted = await pgOne<any>(
     "INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3) RETURNING id, created_at",
     [data.adr_id, userId, data.body],
@@ -2378,7 +2399,7 @@ export async function addCommentService(
   ]);
   const commenterName = commenter?.full_name || commenter?.username || "A user";
 
-  // Parse @username mentions: e.g. @john, @alice_1
+  // Parse @username mentions: only active members of this ADR's project can be tagged/notified
   const mentionMatches = data.body.match(/(?:^|\s)@([a-zA-Z0-9_-]+)/g);
   if (mentionMatches) {
     const rawUsernames = Array.from(
@@ -2386,8 +2407,13 @@ export async function addCommentService(
     );
     if (rawUsernames.length > 0) {
       const mentionedProfiles = await pgQuery<any>(
-        "SELECT id, username FROM profiles WHERE LOWER(username) = ANY($1::text[])",
-        [rawUsernames],
+        `SELECT pr.id, pr.username
+         FROM profiles pr
+         JOIN project_members pm ON pm.user_id = pr.id
+         WHERE pm.project_id = $1
+           AND LOWER(pr.username) = ANY($2::text[])
+           AND NOT COALESCE(pr.is_locked, false)`,
+        [adr.project_id, rawUsernames],
       );
 
       for (const target of mentionedProfiles.rows ?? []) {
@@ -2474,6 +2500,22 @@ export async function assignAdrReviewerService(
   );
   if (!isAdmin && !member) {
     throw new Error("Only project members or platform admins can assign reviewers.");
+  }
+  if (data.reviewer_id) {
+    const reviewerMember = await pgOne<{ role: string }>(
+      "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+      [data.reviewer_id, adr.project_id],
+    );
+    const reviewerIsAdmin = !!(await pgOne(
+      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+      [data.reviewer_id],
+    ));
+    if (!reviewerMember && !reviewerIsAdmin) {
+      throw new Error("Target reviewer is not a member of this project.");
+    }
+    if (reviewerMember?.role === "intern" && !reviewerIsAdmin) {
+      throw new Error("Interns cannot review or approve ADRs.");
+    }
   }
 
   await pgQuery("UPDATE adrs SET assigned_to = $1 WHERE id = $2", [data.reviewer_id, data.adr_id]);

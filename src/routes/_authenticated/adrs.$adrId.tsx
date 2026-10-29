@@ -408,6 +408,7 @@ function AdrDetail() {
 
   const matchingMembers = mentionQuery !== null
     ? (data?.projectMembers ?? []).filter((m: any) => {
+        if (m.is_locked) return false;
         const u = (m.username ?? "").toLowerCase();
         const n = (m.full_name ?? "").toLowerCase();
         return u.includes(mentionQuery) || n.includes(mentionQuery);
@@ -851,7 +852,7 @@ function AdrDetail() {
                   className="flex items-center gap-2 p-2.5 my-2.5 rounded-lg bg-muted/40 border border-border/60 text-xs text-muted-foreground"
                 >
                   <UserCheck className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                  <span className="flex-1 font-medium">{renderCommentWithMentions(c.body, data?.projectAdrs)}</span>
+                  <span className="flex-1 font-medium">{renderCommentWithMentions(c.body, data?.projectAdrs, data?.projectMembers)}</span>
                   <span className="text-[10px] opacity-70 shrink-0">
                     {new Date(c.created_at).toLocaleDateString()}
                   </span>
@@ -911,7 +912,7 @@ function AdrDetail() {
                       )}
                     </div>
                   </div>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{renderCommentWithMentions(c.body, data?.projectAdrs)}</p>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{renderCommentWithMentions(c.body, data?.projectAdrs, data?.projectMembers)}</p>
                 </div>
               </div>
             );
@@ -1558,7 +1559,7 @@ function AdrDetail() {
                   >
                     <option value="">+ Request review from member…</option>
                     {(data.projectMembers ?? [])
-                      .filter((m: any) => !reviewRequests.some((r: any) => r.reviewer_id === m.user_id && r.status !== "revoked"))
+                      .filter((m: any) => m.role !== "intern" && !m.is_locked && !reviewRequests.some((r: any) => r.reviewer_id === m.user_id && r.status !== "revoked"))
                       .map((m: any) => (
                         <option key={m.user_id} value={m.user_id}>
                           {m.full_name ? `${m.full_name} (@${m.username || 'user'})` : m.username || m.email}
@@ -1836,14 +1837,30 @@ function MarkdownProse({ body }: { body: string }) {
   );
 }
 
-function renderCommentWithMentions(text: string, projectAdrs?: any[]) {
+function renderCommentWithMentions(text: string, projectAdrs?: any[], projectMembers?: any[]) {
   const parts = text.split(/(@[a-zA-Z0-9_-]+|#[a-zA-Z0-9_-]+)/g);
   return parts.map((part, i) => {
     if (part.startsWith("@")) {
+      const targetUser = part.slice(1).toLowerCase();
+      const isMember = (projectMembers ?? []).some(
+        (m: any) =>
+          (m.username ?? "").toLowerCase() === targetUser ||
+          (m.email?.split("@")[0] ?? "").toLowerCase() === targetUser,
+      );
+      if (isMember) {
+        return (
+          <span
+            key={i}
+            className="inline-flex items-center gap-0.5 rounded bg-primary/15 text-primary font-semibold px-1 py-0.5 text-xs mx-0.5"
+          >
+            {part}
+          </span>
+        );
+      }
       return (
         <span
           key={i}
-          className="inline-flex items-center gap-0.5 rounded bg-primary/15 text-primary font-semibold px-1 py-0.5 text-xs mx-0.5"
+          className="inline-flex items-center gap-0.5 rounded bg-muted text-muted-foreground font-mono px-1 py-0.5 text-xs mx-0.5"
         >
           {part}
         </span>

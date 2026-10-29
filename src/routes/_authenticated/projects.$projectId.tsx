@@ -1263,6 +1263,7 @@ function MembersPanel({
       toast.success("Member added");
       setPick({ user_id: "", role: "engineer" });
       qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["adr"] });
       onChange();
     } catch (err: unknown) {
       toast.error(getErrorMessage(err, "Failed to add project member"));
@@ -1272,6 +1273,9 @@ function MembersPanel({
   async function remove(id: string) {
     try {
       await removeFn({ data: { id } });
+      toast.success("Member removed from project");
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["adr"] });
       onChange();
     } catch (err: unknown) {
       toast.error(getErrorMessage(err, "Failed to remove project member"));
@@ -1288,8 +1292,13 @@ function MembersPanel({
                 {(m.profiles?.full_name ?? m.profiles?.email ?? "?").slice(0, 1).toUpperCase()}
               </div>
               <div>
-                <div className="text-sm font-medium">
+                <div className="text-sm font-medium flex items-center gap-1.5">
                   {m.profiles?.full_name ?? m.profiles?.email}
+                  {m.profiles?.username && (
+                    <span className="text-xs text-muted-foreground font-mono font-normal">
+                      @{m.profiles.username}
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-muted-foreground">{m.profiles?.email}</div>
               </div>

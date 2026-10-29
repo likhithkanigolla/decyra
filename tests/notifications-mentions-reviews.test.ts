@@ -26,12 +26,18 @@ describe("Notifications, Mentions, and Review Assignment Services", () => {
   });
 
   describe("addCommentService with @mentions", () => {
-    it("parses @mentions and creates notifications for tagged users", async () => {
+    it("parses @mentions and creates notifications for tagged users who are project members", async () => {
       const insertedNotifications: Array<{ sql: string; params: unknown[] }> = [];
 
       vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
         if (sql.includes("FROM adrs a")) {
           return { id: adrId, title: "Database Migration Strategy", full_id: "DEC-0001", project_id: projectId, author_id: actorUserId, status: "draft" };
+        }
+        if (sql.includes("FROM project_members WHERE user_id = $1 AND project_id = $2")) {
+          return { role: "engineer" };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return null;
         }
         if (sql.includes("INSERT INTO comments")) {
           return { id: commentId, created_at: new Date().toISOString() };
@@ -43,7 +49,7 @@ describe("Notifications, Mentions, and Review Assignment Services", () => {
       });
 
       vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
-        if (sql.includes("SELECT id, username FROM profiles WHERE LOWER(username) = ANY")) {
+        if (sql.includes("FROM profiles pr") && sql.includes("JOIN project_members pm")) {
           return { rows: [{ id: targetUserId, username: "bob" }] } as unknown as QueryResult<Record<string, unknown>>;
         }
         if (sql.includes("INSERT INTO notifications")) {
@@ -69,12 +75,18 @@ describe("Notifications, Mentions, and Review Assignment Services", () => {
       expect(notif.params[4]).toBe(`/adrs/${adrId}`); // link ($5)
     });
 
-    it("does not create a notification if the author mentions themselves", async () => {
+    it("does not notify or resolve users who are NOT assigned to the project", async () => {
       const insertedNotifications: unknown[][] = [];
 
       vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
         if (sql.includes("FROM adrs a")) {
-          return { id: adrId, title: "Architecture Decision", full_id: "DEC-0002", project_id: projectId, author_id: actorUserId, status: "draft" };
+          return { id: adrId, title: "Database Migration Strategy", full_id: "DEC-0001", project_id: projectId, author_id: actorUserId, status: "draft" };
+        }
+        if (sql.includes("FROM project_members WHERE user_id = $1 AND project_id = $2")) {
+          return { role: "engineer" };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return null;
         }
         if (sql.includes("INSERT INTO comments")) {
           return { id: commentId, created_at: new Date().toISOString() };
@@ -86,7 +98,71 @@ describe("Notifications, Mentions, and Review Assignment Services", () => {
       });
 
       vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
-        if (sql.includes("SELECT id, username FROM profiles WHERE LOWER(username) = ANY")) {
+        if (sql.includes("FROM profiles pr") && sql.includes("JOIN project_members pm")) {
+          // Non-member not returned by project_members join query
+          return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
+        }
+        if (sql.includes("INSERT INTO notifications")) {
+          insertedNotifications.push(params ?? []);
+          return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
+        }
+        return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
+      });
+
+      await addCommentService(actorUserId, {
+        adr_id: adrId,
+        body: "Hello @outsider, this is a private project",
+      });
+
+      expect(insertedNotifications).toHaveLength(0);
+    });
+
+    it("rejects comments from users who are not assigned to the project or admin", async () => {
+      vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+        if (sql.includes("FROM adrs a")) {
+          return { id: adrId, title: "Architecture Decision", full_id: "DEC-0002", project_id: projectId, author_id: "other-user", status: "under_review" };
+        }
+        if (sql.includes("FROM project_members WHERE user_id = $1 AND project_id = $2")) {
+          return null; // Not a project member
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return null; // Not an admin
+        }
+        return null;
+      });
+
+      await expect(
+        addCommentService("unauthorized-user-id", {
+          adr_id: adrId,
+          body: "Trying to comment without project membership",
+        }),
+      ).rejects.toThrow("Only project members or platform admins can comment on ADRs.");
+    });
+
+    it("does not create a notification if the author mentions themselves", async () => {
+      const insertedNotifications: unknown[][] = [];
+
+      vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+        if (sql.includes("FROM adrs a")) {
+          return { id: adrId, title: "Architecture Decision", full_id: "DEC-0002", project_id: projectId, author_id: actorUserId, status: "draft" };
+        }
+        if (sql.includes("FROM project_members WHERE user_id = $1 AND project_id = $2")) {
+          return { role: "engineer" };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return null;
+        }
+        if (sql.includes("INSERT INTO comments")) {
+          return { id: commentId, created_at: new Date().toISOString() };
+        }
+        if (sql.includes("FROM profiles WHERE id = $1")) {
+          return { id: actorUserId, full_name: "Alice", username: "alice" };
+        }
+        return null;
+      });
+
+      vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
+        if (sql.includes("FROM profiles pr") && sql.includes("JOIN project_members pm")) {
           return { rows: [{ id: actorUserId, username: "alice" }] } as unknown as QueryResult<Record<string, unknown>>;
         }
         if (sql.includes("INSERT INTO notifications")) {
@@ -111,6 +187,12 @@ describe("Notifications, Mentions, and Review Assignment Services", () => {
         if (sql.includes("FROM adrs a")) {
           return { id: adrId, title: "Multi tag test", full_id: "DEC-0003", project_id: projectId, author_id: actorUserId, status: "draft" };
         }
+        if (sql.includes("FROM project_members WHERE user_id = $1 AND project_id = $2")) {
+          return { role: "engineer" };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return null;
+        }
         if (sql.includes("INSERT INTO comments")) {
           return { id: commentId, created_at: new Date().toISOString() };
         }
@@ -121,7 +203,7 @@ describe("Notifications, Mentions, and Review Assignment Services", () => {
       });
 
       vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
-        if (sql.includes("SELECT id, username FROM profiles WHERE LOWER(username) = ANY")) {
+        if (sql.includes("FROM profiles pr") && sql.includes("JOIN project_members pm")) {
           return {
             rows: [
               { id: targetUserId, username: "bob" },
@@ -240,6 +322,56 @@ describe("Notifications, Mentions, and Review Assignment Services", () => {
       expect(res.ok).toBe(true);
       expect(unassigned).toBe(true);
       expect(timelineCommentInserted).toBe(true);
+    });
+
+    it("rejects assigning a reviewer who is NOT a project member", async () => {
+      vi.spyOn(postgres, "queryOne").mockImplementation(async (sql, params) => {
+        if (sql.includes("FROM adrs a")) {
+          return { id: adrId, title: "Async Queue Pattern", full_id: "DEC-0004", project_id: projectId, author_id: actorUserId, status: "under_review" };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return null;
+        }
+        if (sql.includes("FROM project_members")) {
+          if (params?.[0] === actorUserId) {
+            return { role: "project_admin" }; // caller is admin of project
+          }
+          return null; // target reviewer is NOT a member
+        }
+        return null;
+      });
+
+      await expect(
+        assignAdrReviewerService(actorUserId, {
+          adr_id: adrId,
+          reviewer_id: "non-member-user-id",
+        }),
+      ).rejects.toThrow("Target reviewer is not a member of this project.");
+    });
+
+    it("rejects assigning an intern as reviewer", async () => {
+      vi.spyOn(postgres, "queryOne").mockImplementation(async (sql, params) => {
+        if (sql.includes("FROM adrs a")) {
+          return { id: adrId, title: "Async Queue Pattern", full_id: "DEC-0004", project_id: projectId, author_id: actorUserId, status: "under_review" };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return null;
+        }
+        if (sql.includes("FROM project_members")) {
+          if (params?.[0] === actorUserId) {
+            return { role: "project_admin" };
+          }
+          return { role: "intern" }; // target reviewer is intern
+        }
+        return null;
+      });
+
+      await expect(
+        assignAdrReviewerService(actorUserId, {
+          adr_id: adrId,
+          reviewer_id: "intern-user-id",
+        }),
+      ).rejects.toThrow("Interns cannot review or approve ADRs.");
     });
   });
 

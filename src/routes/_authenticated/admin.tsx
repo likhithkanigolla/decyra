@@ -127,6 +127,8 @@ function Admin() {
       toast.success("Project assigned successfully");
       setAssignTarget(null);
       qc.invalidateQueries({ queryKey: ["profiles"] });
+      qc.invalidateQueries({ queryKey: ["project"] });
+      qc.invalidateQueries({ queryKey: ["adr"] });
     } catch (err: any) {
       toast.error(getErrorMessage(err, "Failed to assign project"));
     } finally {
@@ -203,7 +205,19 @@ function Admin() {
                     )}
                     {p.is_locked && <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-destructive tracking-widest">Locked</span>}
                   </div>
-                  <div className="text-xs text-muted-foreground">{p.email}</div>
+                  <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-1.5 mt-0.5">
+                    <span>{p.email}</span>
+                    <span className="text-muted-foreground/40">•</span>
+                    {p.projects && p.projects.length > 0 ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground font-medium">
+                        Projects: {p.projects.map((prj: any) => `${prj.name} (${prj.role.replace("_", " ")})`).join(", ")}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+                        No projects assigned
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-3">
