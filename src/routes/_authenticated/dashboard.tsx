@@ -4,7 +4,10 @@ import { useServerFn } from "@tanstack/react-start";
 import { dashboardStats, getMyContext } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
-import { FileText, FolderKanban, Clock, CheckCircle, Send, BookOpen, TrendingUp } from "lucide-react";
+import {
+  FileText, FolderKanban, Clock, CheckCircle, Send, BookOpen,
+  TrendingUp, UserCheck, MessageSquare, CheckCircle2, ChevronRight
+} from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard — Decyra" }] }),
@@ -44,10 +47,15 @@ function Dashboard() {
     { name: "Superseded", value: c.superseded, key: "superseded" },
   ].filter((d) => d.value > 0);
 
+  const reviewRequired = data?.reviewRequiredAdrs ?? [];
+  const resolvedComments = data?.resolvedComments ?? [];
+  const resolvedCount = data?.resolvedCommentsCount ?? 0;
+
   const statCards = [
     { label: "Total ADRs", value: c.total, icon: <FileText className="h-5 w-5 text-primary" />, sub: "All decisions" },
-    { label: "Projects", value: data?.projectsCount ?? 0, icon: <FolderKanban className="h-5 w-5 text-info" />, sub: "Active" },
-    { label: "Pending Review", value: c.under_review, icon: <Clock className="h-5 w-5 text-warning" />, sub: "Need attention" },
+    { label: "Required for Review", value: reviewRequired.length, icon: <UserCheck className="h-5 w-5 text-amber-500" />, sub: "Awaiting your review" },
+    { label: "Resolved Comments", value: resolvedCount, icon: <CheckCircle2 className="h-5 w-5 text-emerald-500" />, sub: "Discussions closed" },
+    { label: "Pending Review", value: c.under_review, icon: <Clock className="h-5 w-5 text-warning" />, sub: "Across all projects" },
     { label: "Published", value: c.published, icon: <BookOpen className="h-5 w-5 text-success" />, sub: "In production" },
   ];
 
@@ -87,7 +95,7 @@ function Dashboard() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
         {statCards.map((card) => (
           <div key={card.label} className="rounded-xl border border-border bg-card p-5 hover:border-primary/30 transition-colors">
             <div className="flex items-center justify-between mb-3">
@@ -99,6 +107,50 @@ function Dashboard() {
           </div>
         ))}
       </div>
+
+      {/* ADRs Required for Review Section */}
+      {reviewRequired.length > 0 && (
+        <div className="mb-8 rounded-xl border border-amber-500/30 bg-amber-500/5 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <UserCheck className="h-5 w-5 text-amber-500" />
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">ADRs Required for Review</h2>
+              <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                {reviewRequired.length} action needed
+              </span>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {reviewRequired.map((a: any) => (
+              <Link
+                key={a.id}
+                to="/adrs/$adrId"
+                params={{ adrId: a.id }}
+                className="flex items-center justify-between rounded-lg border border-border bg-card p-3 hover:border-primary/40 hover:bg-accent/40 transition-colors group"
+              >
+                <div className="min-w-0 flex-1 pr-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-mono text-xs font-medium text-muted-foreground">{a.full_id}</span>
+                    <span className="text-xs text-muted-foreground">·</span>
+                    <span className="text-xs font-medium text-muted-foreground">{a.proj_code}</span>
+                    {a.is_assigned_to_me && (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                        <UserCheck className="h-2.5 w-2.5" /> Assigned to you
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm font-medium text-foreground truncate group-hover:text-primary transition-colors">
+                    {a.title}
+                  </div>
+                </div>
+                <div className="shrink-0 flex items-center gap-1 text-xs font-medium text-primary">
+                  Review <ChevronRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Recent Activity */}
@@ -131,6 +183,55 @@ function Dashboard() {
                 </div>
               </Link>
             ))}
+          </div>
+
+          {/* Resolved Discussions & Comments */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                Resolved Discussions & Comments
+              </h2>
+            </div>
+            <div className="rounded-xl border border-border bg-card divide-y divide-border">
+              {resolvedComments.length === 0 ? (
+                <div className="p-6 text-center text-xs text-muted-foreground">
+                  No resolved comments yet.
+                </div>
+              ) : (
+                resolvedComments.map((rc: any) => (
+                  <Link
+                    key={rc.id}
+                    to="/adrs/$adrId"
+                    params={{ adrId: rc.adr_id }}
+                    className="flex items-start justify-between p-4 hover:bg-accent/40 transition-colors group"
+                  >
+                    <div className="min-w-0 flex-1 pr-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-mono text-xs text-muted-foreground">{rc.full_id}</span>
+                        <span className="text-xs text-muted-foreground">·</span>
+                        <span className="text-xs text-foreground font-medium truncate">{rc.adr_title}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground line-clamp-1 italic">
+                        "{rc.body}"
+                      </p>
+                      <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground/80">
+                        <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
+                          <CheckCircle2 className="h-3 w-3" /> Resolved by {rc.resolved_by_name ?? "reviewer"}
+                        </span>
+                        {rc.author_name && (
+                          <span className="text-muted-foreground/60">· Author: {rc.author_name}</span>
+                        )}
+                        {rc.resolved_at && (
+                          <span className="text-muted-foreground/60">· {new Date(rc.resolved_at).toLocaleDateString()}</span>
+                        )}
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 group-hover:text-primary transition-colors self-center" />
+                  </Link>
+                ))
+              )}
+            </div>
           </div>
         </div>
 

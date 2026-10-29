@@ -35,6 +35,10 @@ export function buildAuthenticatedGitUrl(rawUrl: string, token: string): string 
     throw new Error("Invalid repository URL.");
   }
 
+  if (url.protocol === "file:") {
+    return url.pathname;
+  }
+
   if (url.protocol !== "https:") {
     throw new Error("Only HTTPS repository URLs are supported.");
   }
@@ -145,19 +149,22 @@ export async function pushAdrToGit(
 
 export interface MigrateProjectOptions {
   project: {
-    id: string;
-    code: string;
-    name: string;
+    id?: string;
+    code?: string;
+    name?: string;
     repo_url: string;
-    branch: string;
-    adr_path: string;
+    branch?: string;
+    adr_path?: string;
+    old_adr_path?: string;
     git_pat: string;
   };
   adrs: Array<{
     id: string;
     full_id: string;
-    title: string;
+    title?: string;
     markdown: string;
+    old_repository_path?: string;
+    repository_path?: string | null;
   }>;
 }
 
@@ -240,15 +247,53 @@ export async function migrateProjectAdrsToGit(opts: MigrateProjectOptions): Prom
 
     const adrPaths: Array<{ id: string; repositoryPath: string }> = [];
 
+    // Track old files to remove so they are moved, not duplicated
     for (const adr of adrs) {
       const fileName = `${adr.full_id.toLowerCase().replace(/[^a-z0-9-]/g, "-")}.md`;
       const filePath = path.join(adrDir, fileName);
+
+      // If adr has an old repository path, delete the old file so it is moved, not copied
+      const oldPath = adr.old_repository_path || adr.repository_path;
+      if (oldPath) {
+        const oldFilePath = path.resolve(repositoryRoot, oldPath);
+        if (
+          oldFilePath !== filePath &&
+          oldFilePath.startsWith(`${repositoryRoot}${path.sep}`) &&
+          fs.existsSync(oldFilePath)
+        ) {
+          fs.rmSync(oldFilePath, { force: true });
+        }
+      }
+
       fs.writeFileSync(filePath, adr.markdown, "utf-8");
       const repositoryPath = path.relative(repositoryRoot, filePath).split(path.sep).join("/");
       adrPaths.push({ id: adr.id, repositoryPath });
     }
 
-    await repoGit.add(".");
+    // Also clean up any old ADR files in old_adr_path if it was specified and differs from adr_path
+    const oldAdrPath = project.old_adr_path;
+    if (oldAdrPath && oldAdrPath !== project.adr_path) {
+      const normalizedOld = normalizeRepositoryAdrPath(oldAdrPath);
+      const oldDir = path.resolve(repositoryRoot, normalizedOld || ".");
+      if (oldDir !== adrDir && oldDir.startsWith(`${repositoryRoot}${path.sep}`) && fs.existsSync(oldDir)) {
+        for (const adr of adrs) {
+          const fileName = `${adr.full_id.toLowerCase().replace(/[^a-z0-9-]/g, "-")}.md`;
+          const oldFilePath = path.join(oldDir, fileName);
+          if (fs.existsSync(oldFilePath) && oldFilePath !== path.join(adrDir, fileName)) {
+            fs.rmSync(oldFilePath, { force: true });
+          }
+        }
+        try {
+          if (fs.readdirSync(oldDir).length === 0) {
+            fs.rmdirSync(oldDir);
+          }
+        } catch {
+          // ignore directory cleanup error
+        }
+      }
+    }
+
+    await repoGit.add("-A");
     const status = await repoGit.status();
 
     let commitHash: string | undefined;

@@ -184,26 +184,29 @@ describe("updateProjectService - Git token validation and ADR repository migrati
     });
 
     expect(migrateSpy).toHaveBeenCalledTimes(1);
-    expect(migrateSpy).toHaveBeenCalledWith({
-      project: {
-        repo_url: "https://github.com/new-org/new-repo.git",
-        branch: "develop",
-        adr_path: "architecture/decisions",
-        git_pat: "ghp_migrationToken999",
-      },
-      adrs: [
-        {
-          id: "33333333-3333-3333-3333-333333333333",
-          full_id: "ADR-001",
-          markdown: "# ADR-001: Use PostgreSQL\n\nDecision content",
-        },
-        {
-          id: "44444444-4444-4444-4444-444444444444",
-          full_id: "ADR-002",
-          markdown: "# ADR-002: Adopt TanStack Start\n\nDecision content",
-        },
-      ],
-    });
+    expect(migrateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project: expect.objectContaining({
+          repo_url: "https://github.com/new-org/new-repo.git",
+          branch: "develop",
+          adr_path: "architecture/decisions",
+          git_pat: "ghp_migrationToken999",
+          old_adr_path: "docs/adr",
+        }),
+        adrs: expect.arrayContaining([
+          expect.objectContaining({
+            id: "33333333-3333-3333-3333-333333333333",
+            full_id: "ADR-001",
+            markdown: "# ADR-001: Use PostgreSQL\n\nDecision content",
+          }),
+          expect.objectContaining({
+            id: "44444444-4444-4444-4444-444444444444",
+            full_id: "ADR-002",
+            markdown: "# ADR-002: Adopt TanStack Start\n\nDecision content",
+          }),
+        ]),
+      }),
+    );
 
     const updateAdrQueries = executedSqlQueries.filter((q) =>
       q.includes("UPDATE adrs SET repository_path = $1"),

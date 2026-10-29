@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   getAdr, updateAdrStatus, approveAdr, revokeAdrApproval, addComment,
   getAdrRelationships, addAdrRelationship, removeAdrRelationship, publishAdr,
-  searchAdrs, deleteAdr
+  searchAdrs, deleteAdr, assignAdrReviewer, resolveComment
 } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { SimpleMarkdown } from "@/components/decyra/RichEditor";
@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Edit, Send, ThumbsUp, MessageSquare, GitCommit,
   GitBranch, Link as LinkIcon, X, Plus, Book, ChevronDown, ChevronRight,
-  Eye, Rocket, ExternalLink, Trash2
+  Eye, Rocket, ExternalLink, Trash2, UserCheck, CheckCircle2, Check, AtSign
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/adrs/$adrId")({
@@ -57,9 +57,15 @@ function AdrDetail() {
   const publishFn = useServerFn(publishAdr);
   const searchFn = useServerFn(searchAdrs);
   const deleteAdrFn = useServerFn(deleteAdr);
+  const assignReviewerFn = useServerFn(assignAdrReviewer);
+  const resolveCommentFn = useServerFn(resolveComment);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingAdr, setDeletingAdr] = useState(false);
+
+  // @mention autocomplete state
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const commentTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { data, isError, isLoading } = useQuery({
     queryKey: ["adr", adrId],
@@ -143,12 +149,85 @@ function AdrDetail() {
     }
   }
 
+  async function handleAssignReviewer(reviewerId: string | null) {
+    setBusy("assign");
+    try {
+      await assignReviewerFn({ data: { adr_id: adrId, reviewer_id: reviewerId } });
+      toast.success(reviewerId ? "Reviewer assigned" : "Reviewer unassigned");
+      qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to assign reviewer"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleToggleResolve(commentId: string, isResolved: boolean) {
+    try {
+      await resolveCommentFn({ data: { comment_id: commentId, is_resolved: isResolved } });
+      toast.success(isResolved ? "Comment marked as resolved" : "Comment reopened");
+      qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to update comment resolution"));
+    }
+  }
+
+  function handleCommentChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const val = e.target.value;
+    setComment(val);
+
+    const cursorPos = e.target.selectionStart ?? val.length;
+    const textBeforeCursor = val.slice(0, cursorPos);
+    const match = textBeforeCursor.match(/@([a-zA-Z0-9_-]*)$/);
+
+    if (match) {
+      setMentionQuery(match[1].toLowerCase());
+    } else {
+      setMentionQuery(null);
+    }
+  }
+
+  function insertMention(username: string) {
+    if (!commentTextareaRef.current) return;
+    const textarea = commentTextareaRef.current;
+    const cursorPos = textarea.selectionStart ?? comment.length;
+    const textBeforeCursor = comment.slice(0, cursorPos);
+    const textAfterCursor = comment.slice(cursorPos);
+
+    const match = textBeforeCursor.match(/@([a-zA-Z0-9_-]*)$/);
+    if (!match) return;
+
+    const prefix = textBeforeCursor.slice(0, match.index);
+    const nextComment = `${prefix}@${username} ${textAfterCursor}`;
+    setComment(nextComment);
+    setMentionQuery(null);
+
+    setTimeout(() => {
+      textarea.focus();
+      const nextPos = (prefix + `@${username} `).length;
+      textarea.setSelectionRange(nextPos, nextPos);
+    }, 0);
+  }
+
+  const matchingMembers = mentionQuery !== null
+    ? (data?.projectMembers ?? []).filter((m: any) => {
+        const u = (m.username ?? "").toLowerCase();
+        const n = (m.full_name ?? "").toLowerCase();
+        return u.includes(mentionQuery) || n.includes(mentionQuery);
+      })
+    : [];
+
   async function submitComment() {
     if (!comment.trim()) return;
     setBusy("comment");
     try {
       await commentFn({ data: { adr_id: adrId, body: comment.trim() } });
       setComment("");
+      setMentionQuery(null);
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
     } catch (err: any) { toast.error(getErrorMessage(err, "Failed to add comment")); }
     finally { setBusy(""); }
@@ -269,6 +348,15 @@ function AdrDetail() {
                         <span key={t} className="rounded-full bg-primary/10 text-primary px-2 py-0.5">{t}</span>
                       ))}
                     </div>
+                  </>
+                )}
+                {adr.assigned_to_profile && (
+                  <>
+                    <span>·</span>
+                    <span className="inline-flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full">
+                      <UserCheck className="h-3 w-3" />
+                      Reviewer: @{adr.assigned_to_profile.username || adr.assigned_to_profile.full_name}
+                    </span>
                   </>
                 )}
               </div>
@@ -408,38 +496,129 @@ function AdrDetail() {
           )}
 
           {/* Comments */}
-          {(data.comments ?? []).map((c: any) => (
-            <div key={c.id} className="flex gap-3 mb-3">
-              <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent text-xs font-semibold">
-                {(c.profiles?.full_name ?? "?").slice(0, 1).toUpperCase()}
-              </div>
-              <div className="flex-1 rounded-lg border border-border bg-background px-3 py-2.5">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-medium">{c.profiles?.full_name ?? "User"}</span>
-                  <span className="text-[10px] text-muted-foreground">{new Date(c.created_at).toLocaleDateString()}</span>
+          {(data.comments ?? []).map((c: any) => {
+            if (c.body.startsWith("📋")) {
+              return (
+                <div
+                  key={c.id}
+                  className="flex items-center gap-2 p-2.5 my-2.5 rounded-lg bg-muted/40 border border-border/60 text-xs text-muted-foreground"
+                >
+                  <UserCheck className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                  <span className="flex-1 font-medium">{renderCommentWithMentions(c.body)}</span>
+                  <span className="text-[10px] opacity-70 shrink-0">
+                    {new Date(c.created_at).toLocaleDateString()}
+                  </span>
                 </div>
-                <p className="text-sm">{c.body}</p>
-              </div>
-            </div>
-          ))}
+              );
+            }
 
-          {/* Comment input */}
-          <div className="flex gap-2 mt-3">
-            <textarea
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitComment(); }}
-              rows={2}
-              placeholder="Add a comment… (Cmd+Enter to submit)"
-              className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm resize-none"
-            />
-            <button
-              onClick={submitComment}
-              disabled={!comment.trim() || busy === "comment"}
-              className="self-end h-9 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              <Send className="h-3.5 w-3.5" />
-            </button>
+            return (
+              <div
+                key={c.id}
+                className={`flex gap-3 mb-3 p-2.5 rounded-xl border transition-colors ${
+                  c.is_resolved
+                    ? "border-emerald-500/30 bg-emerald-500/[0.03]"
+                    : "border-border bg-background"
+                }`}
+              >
+                <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent text-xs font-semibold">
+                  {(c.profiles?.full_name ?? "?").slice(0, 1).toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-semibold">{c.profiles?.full_name ?? "User"}</span>
+                      {c.profiles?.username && (
+                        <span className="text-[10px] text-muted-foreground">@{c.profiles.username}</span>
+                      )}
+                      <span className="text-[10px] text-muted-foreground">
+                        {new Date(c.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+
+                    {/* Resolution button & badge */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {c.is_resolved ? (
+                        <>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                            <Check className="h-3 w-3" />
+                            Resolved{c.resolved_by_profile ? ` by ${c.resolved_by_profile.full_name}` : ""}
+                          </span>
+                          <button
+                            onClick={() => handleToggleResolve(c.id, false)}
+                            className="text-[10px] text-muted-foreground hover:text-foreground underline transition-colors"
+                            title="Reopen comment"
+                          >
+                            Reopen
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => handleToggleResolve(c.id, true)}
+                          className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 font-medium px-2 py-0.5 rounded hover:bg-emerald-500/10 transition-colors"
+                          title="Mark comment as resolved"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Resolve
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{renderCommentWithMentions(c.body)}</p>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Comment input with @mention autocomplete */}
+          <div className="relative mt-3">
+            {mentionQuery !== null && matchingMembers.length > 0 && (
+              <div className="absolute bottom-full mb-1 left-0 w-64 max-h-48 overflow-y-auto rounded-lg border border-border bg-card shadow-xl z-20 divide-y divide-border/60 animate-in fade-in duration-150">
+                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/30">
+                  Tag member
+                </div>
+                {matchingMembers.map((m: any) => (
+                  <button
+                    key={m.user_id}
+                    type="button"
+                    onClick={() => insertMention(m.username || m.email?.split("@")[0])}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent transition-colors"
+                  >
+                    <div className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-primary/10 text-[9px] font-bold text-primary">
+                      {(m.full_name || m.username || "?").slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium truncate">{m.full_name || m.username}</div>
+                      <div className="text-[10px] text-muted-foreground truncate">@{m.username || m.email?.split("@")[0]}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <textarea
+                ref={commentTextareaRef}
+                value={comment}
+                onChange={handleCommentChange}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    submitComment();
+                  }
+                }}
+                rows={2}
+                placeholder="Add a comment… Type @ to mention a team member (Cmd+Enter to submit)"
+                className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <button
+                onClick={submitComment}
+                disabled={!comment.trim() || busy === "comment"}
+                className="self-end h-9 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center"
+              >
+                <Send className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -589,6 +768,42 @@ function AdrDetail() {
               </div>
             </div>
           )}
+        </div>
+
+        {/* Reviewer Assignment */}
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Assigned Reviewer</h3>
+            <UserCheck className="h-4 w-4 text-amber-500" />
+          </div>
+
+          {adr.assigned_to_profile ? (
+            <div className="flex items-center gap-2.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-3">
+              <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-amber-500/20 text-xs font-bold text-amber-600 dark:text-amber-400">
+                {(adr.assigned_to_profile.full_name || adr.assigned_to_profile.username || "?").slice(0, 1).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold text-foreground truncate">{adr.assigned_to_profile.full_name}</div>
+                <div className="text-[11px] text-muted-foreground truncate">@{adr.assigned_to_profile.username}</div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground mb-3 italic">No reviewer assigned yet.</p>
+          )}
+
+          <select
+            value={adr.assigned_to ?? ""}
+            onChange={(e) => handleAssignReviewer(e.target.value ? e.target.value : null)}
+            disabled={busy === "assign"}
+            className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="">{adr.assigned_to ? "Unassign reviewer" : "Assign a reviewer…"}</option>
+            {(data.projectMembers ?? []).map((m: any) => (
+              <option key={m.user_id} value={m.user_id}>
+                {m.full_name ? `${m.full_name} (@${m.username || 'user'})` : m.username || m.email}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Relationships */}
@@ -757,3 +972,21 @@ function MarkdownProse({ body }: { body: string }) {
   if (!body?.trim()) return <p className="text-sm text-muted-foreground italic">Not provided</p>;
   return <div className="text-sm leading-relaxed text-foreground prose-sm max-w-none"><SimpleMarkdown text={body} /></div>;
 }
+
+function renderCommentWithMentions(text: string) {
+  const parts = text.split(/(@[a-zA-Z0-9_-]+)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("@")) {
+      return (
+        <span
+          key={i}
+          className="inline-flex items-center gap-0.5 rounded bg-primary/15 text-primary font-semibold px-1 py-0.5 text-xs mx-0.5"
+        >
+          {part}
+        </span>
+      );
+    }
+    return part;
+  });
+}
+

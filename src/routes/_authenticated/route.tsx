@@ -6,6 +6,7 @@ import {
   LayoutDashboard, FolderKanban, FileText, LogOut, Shield,
   Search, Sun, Moon, GitBranch, ChevronRight
 } from "lucide-react";
+import { NotificationBell } from "@/components/decyra/NotificationBell";
 import { useState, useEffect } from "react";
 
 type Theme = "dark" | "light";
@@ -209,6 +210,16 @@ function Shell() {
 
       {/* Main content */}
       <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto">
+        <header className="h-14 border-b border-border/40 bg-background/80 backdrop-blur px-8 flex items-center justify-between shrink-0 sticky top-0 z-30">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground tracking-tight capitalize">
+              {pathname === "/dashboard" ? "Dashboard" : pathname.replace(/^\//, "").split("/")[0]}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <NotificationBell />
+          </div>
+        </header>
         <Outlet />
       </main>
     </div>

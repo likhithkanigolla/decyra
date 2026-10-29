@@ -372,14 +372,21 @@ export async function updateProjectService(userId: string, data: UpdateProjectIn
     const adrsToMigrate = (publishedAdrs?.rows ?? []).map((a: any) => ({
       id: a.id,
       full_id: a.full_id,
+      title: a.title,
+      repository_path: a.repository_path,
+      old_repository_path: a.repository_path,
       markdown: a.latest_markdown || generateAdrMarkdown(a),
     }));
 
     const migrationResult = await migrateProjectAdrsToGit({
       project: {
+        id: existing.id,
+        code: existing.code,
+        name: data.name || existing.name,
         repo_url: newRepoUrl!,
         branch: newBranch,
         adr_path: newAdrPath,
+        old_adr_path: oldAdrPath,
         git_pat: gitToken,
       },
       adrs: adrsToMigrate,
@@ -1597,9 +1604,11 @@ export const getAdr = createServerFn({ method: "POST" })
     const { userId } = context;
 
     const adr = await pgOne<any>(
-      `SELECT a.*, p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.required_approvals
+      `SELECT a.*, p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.required_approvals,
+              ass.full_name AS assigned_to_name, ass.username AS assigned_to_username, ass.avatar_url AS assigned_to_avatar
        FROM adrs a
        JOIN projects p ON p.id = a.project_id
+       LEFT JOIN profiles ass ON ass.id = a.assigned_to
        WHERE a.id = $1`,
       [data.id],
     );
@@ -1609,6 +1618,14 @@ export const getAdr = createServerFn({ method: "POST" })
     // Shape to match nested format
     const shaped = {
       ...adr,
+      assigned_to_profile: adr.assigned_to
+        ? {
+            id: adr.assigned_to,
+            full_name: adr.assigned_to_name,
+            username: adr.assigned_to_username,
+            avatar_url: adr.assigned_to_avatar,
+          }
+        : null,
       projects: {
         id: adr.proj_id,
         name: adr.proj_name,
@@ -1617,21 +1634,24 @@ export const getAdr = createServerFn({ method: "POST" })
       },
     };
 
-    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow] = await Promise.all([
+    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow, membersRow] = await Promise.all([
       pgQuery(
-        `SELECT ap.*, pr.full_name, pr.email
+        `SELECT ap.*, pr.full_name, pr.email, pr.username
          FROM approvals ap LEFT JOIN profiles pr ON pr.id = ap.user_id
          WHERE ap.adr_id = $1`,
         [data.id],
       ),
       pgQuery(
-        `SELECT c.*, pr.full_name, pr.email
-         FROM comments c LEFT JOIN profiles pr ON pr.id = c.user_id
+        `SELECT c.*, pr.full_name, pr.email, pr.username,
+                res_pr.full_name AS resolved_by_name, res_pr.username AS resolved_by_username
+         FROM comments c
+         LEFT JOIN profiles pr ON pr.id = c.user_id
+         LEFT JOIN profiles res_pr ON res_pr.id = c.resolved_by
          WHERE c.adr_id = $1 ORDER BY c.created_at`,
         [data.id],
       ),
       pgQuery(
-        `SELECT pv.*, pr.full_name, pr.email
+        `SELECT pv.*, pr.full_name, pr.email, pr.username
          FROM published_versions pv LEFT JOIN profiles pr ON pr.id = pv.published_by
          WHERE pv.adr_id = $1 ORDER BY pv.version_number DESC`,
         [data.id],
@@ -1641,10 +1661,24 @@ export const getAdr = createServerFn({ method: "POST" })
         adr.proj_id,
       ]),
       pgQuery("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
+      pgQuery(
+        `SELECT pm.user_id, pm.role, pr.full_name, pr.username, pr.email, pr.avatar_url
+         FROM project_members pm
+         JOIN profiles pr ON pr.id = pm.user_id
+         WHERE pm.project_id = $1
+         ORDER BY pr.full_name ASC`,
+        [adr.proj_id],
+      ),
     ]);
 
     const shapeWithProfiles = (rows: any[]) =>
-      rows.map((r) => ({ ...r, profiles: { full_name: r.full_name, email: r.email } }));
+      rows.map((r) => ({
+        ...r,
+        profiles: { full_name: r.full_name, email: r.email, username: r.username },
+        resolved_by_profile: r.resolved_by
+          ? { full_name: r.resolved_by_name, username: r.resolved_by_username }
+          : null,
+      }));
 
     const isAdmin = (adminRow.rows?.length ?? 0) > 0;
     const myRole = roleRow.rows?.[0]?.role ?? null;
@@ -1669,6 +1703,7 @@ export const getAdr = createServerFn({ method: "POST" })
       approvals: shapeWithProfiles(approvalsRow.rows ?? []),
       comments: shapeWithProfiles(commentsRow.rows ?? []),
       publishedVersions: shapeWithProfiles(versionsRow.rows ?? []),
+      projectMembers: membersRow.rows ?? [],
       isAdmin,
       myRole,
       currentUserId: userId,
@@ -1957,7 +1992,64 @@ export const revokeAdrApproval = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-// ─── addComment ───────────────────────────────────────────────────────────────
+// ─── addComment & Mentions ───────────────────────────────────────────────────
+
+export async function addCommentService(
+  userId: string,
+  data: { adr_id: string; body: string },
+) {
+  const adr = await pgOne<any>(
+    `SELECT a.id, a.full_id, a.title, a.project_id, a.author_id, a.status, p.name AS proj_name
+     FROM adrs a JOIN projects p ON p.id = a.project_id
+     WHERE a.id = $1`,
+    [data.adr_id],
+  );
+  if (!adr) throw new Error("ADR not found.");
+  assertDraftAdrOwner(adr, userId);
+
+  const inserted = await pgOne<any>(
+    "INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3) RETURNING id, created_at",
+    [data.adr_id, userId, data.body],
+  );
+
+  const commenter = await pgOne<any>("SELECT full_name, username FROM profiles WHERE id = $1", [
+    userId,
+  ]);
+  const commenterName = commenter?.full_name || commenter?.username || "A user";
+
+  // Parse @username mentions: e.g. @john, @alice_1
+  const mentionMatches = data.body.match(/(?:^|\s)@([a-zA-Z0-9_-]+)/g);
+  if (mentionMatches) {
+    const rawUsernames = Array.from(
+      new Set(mentionMatches.map((m) => m.trim().replace(/^@/, "").toLowerCase())),
+    );
+    if (rawUsernames.length > 0) {
+      const mentionedProfiles = await pgQuery<any>(
+        "SELECT id, username FROM profiles WHERE LOWER(username) = ANY($1::text[])",
+        [rawUsernames],
+      );
+
+      for (const target of mentionedProfiles.rows ?? []) {
+        if (target.id !== userId) {
+          const preview = data.body.length > 100 ? `${data.body.slice(0, 100)}…` : data.body;
+          await pgQuery(
+            `INSERT INTO notifications (user_id, actor_id, type, title, message, link)
+             VALUES ($1, $2, 'mention', $3, $4, $5)`,
+            [
+              target.id,
+              userId,
+              `Mentioned in ${adr.full_id}`,
+              `${commenterName} mentioned you on "${adr.title}": "${preview}"`,
+              `/adrs/${adr.id}`,
+            ],
+          );
+        }
+      }
+    }
+  }
+
+  return { ok: true, id: inserted?.id };
+}
 
 export const addComment = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
@@ -1971,15 +2063,239 @@ export const addComment = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
-    await assertDraftAdrVisible(context, data.adr_id);
+    return addCommentService(context.userId, data);
+  });
 
+// ─── assignAdrReviewer ─────────────────────────────────────────────────────────
+
+export async function assignAdrReviewerService(
+  userId: string,
+  data: { adr_id: string; reviewer_id: string | null },
+) {
+  const adr = await pgOne<any>(
+    `SELECT a.id, a.full_id, a.title, a.project_id, a.author_id, a.status, a.assigned_to
+     FROM adrs a WHERE a.id = $1`,
+    [data.adr_id],
+  );
+  if (!adr) throw new Error("ADR not found.");
+  assertDraftAdrOwner(adr, userId);
+
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, adr.project_id],
+  );
+  if (!isAdmin && !member) {
+    throw new Error("Only project members or platform admins can assign reviewers.");
+  }
+
+  await pgQuery("UPDATE adrs SET assigned_to = $1 WHERE id = $2", [data.reviewer_id, data.adr_id]);
+
+  const assigner = await pgOne<any>("SELECT full_name, username FROM profiles WHERE id = $1", [
+    userId,
+  ]);
+  const assignerName = assigner?.full_name || assigner?.username || "A user";
+
+  if (data.reviewer_id) {
+    const reviewer = await pgOne<any>("SELECT full_name, username FROM profiles WHERE id = $1", [
+      data.reviewer_id,
+    ]);
+    const reviewerHandle = reviewer?.username ? `@${reviewer.username}` : reviewer?.full_name || "reviewer";
+
+    // Pass as comment in the timeline
+    const timelineComment = `📋 Assigned ${reviewerHandle} to review this ADR.`;
     await pgQuery("INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)", [
       data.adr_id,
       userId,
-      data.body,
+      timelineComment,
     ]);
-    return { ok: true };
+
+    // Send notification
+    if (data.reviewer_id !== userId) {
+      await pgQuery(
+        `INSERT INTO notifications (user_id, actor_id, type, title, message, link)
+         VALUES ($1, $2, 'assignment', $3, $4, $5)`,
+        [
+          data.reviewer_id,
+          userId,
+          `Assigned to review ${adr.full_id}`,
+          `${assignerName} assigned you to review "${adr.title}".`,
+          `/adrs/${adr.id}`,
+        ],
+      );
+    }
+  } else {
+    const timelineComment = "📋 Unassigned reviewer from this ADR.";
+    await pgQuery("INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)", [
+      data.adr_id,
+      userId,
+      timelineComment,
+    ]);
+  }
+
+  return { ok: true };
+}
+
+export const assignAdrReviewer = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        adr_id: z.string().uuid(),
+        reviewer_id: z.string().uuid().nullable(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return assignAdrReviewerService(context.userId, data);
+  });
+
+// ─── resolveComment ───────────────────────────────────────────────────────────
+
+export async function resolveCommentService(
+  userId: string,
+  data: { comment_id: string; resolved?: boolean; is_resolved?: boolean },
+) {
+  const comment = await pgOne<any>(
+    `SELECT c.id, c.adr_id, c.user_id, c.body, a.full_id, a.title, a.project_id
+     FROM comments c
+     JOIN adrs a ON a.id = c.adr_id
+     WHERE c.id = $1`,
+    [data.comment_id],
+  );
+  if (!comment) throw new Error("Comment not found.");
+
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, comment.project_id],
+  );
+  if (!isAdmin && !member) {
+    throw new Error("Only project members or admins can resolve comments.");
+  }
+
+  const isResolved = data.resolved ?? data.is_resolved ?? true;
+
+  if (isResolved) {
+    await pgQuery(
+      `UPDATE comments
+       SET is_resolved = true, resolved_by = $1, resolved_at = now()
+       WHERE id = $2`,
+      [userId, data.comment_id],
+    );
+
+    if (comment.user_id !== userId) {
+      const resolver = await pgOne<any>("SELECT full_name, username FROM profiles WHERE id = $1", [
+        userId,
+      ]);
+      const resolverName = resolver?.full_name || resolver?.username || "A user";
+      await pgQuery(
+        `INSERT INTO notifications (user_id, actor_id, type, title, message, link)
+         VALUES ($1, $2, 'comment_resolved', $3, $4, $5)`,
+        [
+          comment.user_id,
+          userId,
+          `Comment resolved on ${comment.full_id}`,
+          `${resolverName} marked your comment on "${comment.title}" as resolved.`,
+          `/adrs/${comment.adr_id}`,
+        ],
+      );
+    }
+  } else {
+    await pgQuery(
+      `UPDATE comments
+       SET is_resolved = false, resolved_by = NULL, resolved_at = NULL
+       WHERE id = $1`,
+      [data.comment_id],
+    );
+  }
+
+  return { ok: true };
+}
+
+export const resolveComment = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        comment_id: z.string().uuid(),
+        resolved: z.boolean().optional(),
+        is_resolved: z.boolean().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return resolveCommentService(context.userId, data);
+  });
+
+// ─── Notifications: getNotifications & markNotificationRead ──────────────────
+
+export async function getNotificationsService(userId: string) {
+  const [listRow, countRow] = await Promise.all([
+    pgQuery(
+      `SELECT n.*, pr.full_name AS actor_name, pr.username AS actor_username, pr.avatar_url AS actor_avatar
+       FROM notifications n
+       LEFT JOIN profiles pr ON pr.id = n.actor_id
+       WHERE n.user_id = $1
+       ORDER BY n.created_at DESC
+       LIMIT 30`,
+      [userId],
+    ),
+    pgOne<{ unread: string }>(
+      "SELECT COUNT(*) AS unread FROM notifications WHERE user_id = $1 AND is_read = false",
+      [userId],
+    ),
+  ]);
+
+  return {
+    notifications: listRow.rows ?? [],
+    unreadCount: Number(countRow?.unread ?? 0),
+  };
+}
+
+export async function markNotificationReadService(
+  userId: string,
+  data: { id?: string; all?: boolean },
+) {
+  if (data.all) {
+    await pgQuery("UPDATE notifications SET is_read = true WHERE user_id = $1", [userId]);
+  } else if (data.id) {
+    await pgQuery("UPDATE notifications SET is_read = true WHERE id = $1 AND user_id = $2", [
+      data.id,
+      userId,
+    ]);
+  }
+  return { ok: true };
+}
+
+export const getNotifications = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .handler(async ({ context: rawCtx }) => {
+    const context = ctx(rawCtx);
+    return getNotificationsService(context.userId);
+  });
+
+export const markNotificationRead = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid().optional(),
+        all: z.boolean().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return markNotificationReadService(context.userId, data);
   });
 
 // ─── dashboardStats ───────────────────────────────────────────────────────────
@@ -2001,9 +2317,12 @@ export const dashboardStats = createServerFn({ method: "POST" })
     if (isAdmin) {
       [adrsRow, projectsRow] = await Promise.all([
         pgQuery(
-          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
-                  p.name AS proj_name, p.code AS proj_code
-           FROM adrs a JOIN projects p ON p.id = a.project_id
+          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id, a.assigned_to,
+                  p.name AS proj_name, p.code AS proj_code,
+                  ass.full_name AS assigned_to_name, ass.username AS assigned_to_username
+           FROM adrs a
+           JOIN projects p ON p.id = a.project_id
+           LEFT JOIN profiles ass ON ass.id = a.assigned_to
            WHERE (a.status <> 'draft' OR a.author_id = $1)
            ORDER BY a.updated_at DESC LIMIT 20`,
           [userId],
@@ -2013,11 +2332,13 @@ export const dashboardStats = createServerFn({ method: "POST" })
     } else {
       [adrsRow, projectsRow] = await Promise.all([
         pgQuery(
-          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id,
-                  p.name AS proj_name, p.code AS proj_code
+          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id, a.assigned_to,
+                  p.name AS proj_name, p.code AS proj_code,
+                  ass.full_name AS assigned_to_name, ass.username AS assigned_to_username
            FROM adrs a 
            JOIN projects p ON p.id = a.project_id
            JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
+           LEFT JOIN profiles ass ON ass.id = a.assigned_to
            WHERE (a.status <> 'draft' OR a.author_id = $2)
            ORDER BY a.updated_at DESC LIMIT 20`,
           [userId, userId],
@@ -2030,9 +2351,72 @@ export const dashboardStats = createServerFn({ method: "POST" })
       ]);
     }
 
+    const [reviewRequiredRow, resolvedCommentsRow, resolvedCountRow, unreadNotificationsRow] =
+      await Promise.all([
+        pgQuery(
+          `SELECT a.id, a.full_id, a.title, a.status, a.updated_at, a.assigned_to,
+                  p.name AS proj_name, p.code AS proj_code,
+                  (a.assigned_to = $1) AS is_assigned_to_me
+           FROM adrs a
+           JOIN projects p ON p.id = a.project_id
+           WHERE a.status = 'under_review'
+             AND (
+               $2 = true OR EXISTS (
+                 SELECT 1 FROM project_members pm
+                 WHERE pm.project_id = p.id AND pm.user_id = $1 AND pm.role <> 'intern'
+               )
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM approvals ap
+               WHERE ap.adr_id = a.id AND ap.user_id = $1 AND ap.decision = 'approve'
+             )
+           ORDER BY (a.assigned_to = $1) DESC, a.updated_at DESC
+           LIMIT 10`,
+          [userId, isAdmin],
+        ),
+        pgQuery(
+          `SELECT c.id, c.body, c.resolved_at, c.adr_id, a.full_id, a.title AS adr_title,
+                  res_pr.full_name AS resolved_by_name, pr.full_name AS author_name
+           FROM comments c
+           JOIN adrs a ON a.id = c.adr_id
+           JOIN projects p ON p.id = a.project_id
+           LEFT JOIN profiles res_pr ON res_pr.id = c.resolved_by
+           LEFT JOIN profiles pr ON pr.id = c.user_id
+           WHERE c.is_resolved = true
+             AND (
+               $2 = true OR EXISTS (
+                 SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $1
+               )
+             )
+           ORDER BY c.resolved_at DESC
+           LIMIT 5`,
+          [userId, isAdmin],
+        ),
+        pgOne<{ count: string }>(
+          `SELECT COUNT(*) AS count
+           FROM comments c
+           JOIN adrs a ON a.id = c.adr_id
+           JOIN projects p ON p.id = a.project_id
+           WHERE c.is_resolved = true
+             AND (
+               $2 = true OR EXISTS (
+                 SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $1
+               )
+             )`,
+          [userId, isAdmin],
+        ),
+        pgOne<{ count: string }>(
+          "SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = false",
+          [userId],
+        ),
+      ]);
+
     const adrs = (adrsRow.rows ?? []).map((a: any) => ({
       ...a,
       projects: { name: a.proj_name, code: a.proj_code },
+      assigned_to_profile: a.assigned_to
+        ? { id: a.assigned_to, full_name: a.assigned_to_name, username: a.assigned_to_username }
+        : null,
     }));
     const counts = {
       total: 0,
@@ -2046,7 +2430,16 @@ export const dashboardStats = createServerFn({ method: "POST" })
       counts.total++;
       if (a.status in counts) counts[a.status as keyof typeof counts]++;
     });
-    return { recent: adrs, counts, projectsCount: (projectsRow.rows ?? []).length };
+
+    return {
+      recent: adrs,
+      counts,
+      projectsCount: (projectsRow.rows ?? []).length,
+      reviewRequired: reviewRequiredRow.rows ?? [],
+      resolvedComments: resolvedCommentsRow.rows ?? [],
+      resolvedCommentsCount: Number(resolvedCountRow?.count ?? 0),
+      unreadNotificationsCount: Number(unreadNotificationsRow?.count ?? 0),
+    };
   });
 
 // ─── updateUser (admin: edit role / name / username) ──────────────────────────
