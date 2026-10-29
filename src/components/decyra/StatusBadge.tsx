@@ -64,7 +64,7 @@ export function StatusBadge({
               : "bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20"
           }`}
         >
-          {userReviewDecision === "approve" ? "✓ You approved" : "✗ You requested changes"}
+          {userReviewDecision === "approve" ? "✓ You approved" : "✗ You rejected"}
         </span>
       )}
     </div>

@@ -1774,7 +1774,7 @@ export async function getAdrService(userId: string, data: { id: string }) {
           adr_id: data.id,
           user_id: ap.user_id,
           event_type: ap.decision === "approve" ? "approved" : "changes_requested",
-          summary: ap.decision === "approve" ? "Approved this ADR" : "Requested changes on this ADR",
+          summary: ap.decision === "approve" ? "Approved this ADR" : "Rejected this ADR",
           changes: { note: ap.note },
           created_at: ap.created_at,
           profiles: { full_name: ap.full_name, username: ap.username, email: ap.email },
@@ -2077,7 +2077,7 @@ export async function approveAdrService(
     adr_id: data.adr_id,
     user_id: userId,
     event_type: isApprove ? "approved" : "changes_requested",
-    summary: isApprove ? "Approved this ADR" : "Requested changes on this ADR",
+    summary: isApprove ? "Approved this ADR" : "Rejected this ADR",
     changes: { decision: data.decision, note: data.note ?? null },
   });
 

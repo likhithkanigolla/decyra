@@ -227,7 +227,7 @@ function AdrDetail() {
     setBusy("approve");
     try {
       await approveFn({ data: { adr_id: adrId, decision, note: approvalNote } });
-      toast.success(decision === "approve" ? "Approved!" : "Requested Changes");
+      toast.success(decision === "approve" ? "Approved!" : "Rejected");
       setApprovalNote("");
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
     } catch (err: any) { toast.error(getErrorMessage(err, "Failed to submit review")); }
@@ -832,7 +832,7 @@ function AdrDetail() {
                   <div className="flex items-center gap-2">
                     <ThumbsUp className={`h-3.5 w-3.5 ${a.decision === "approve" ? "text-success" : "text-destructive"}`} />
                     <span className="font-medium">{a.profiles?.full_name ?? "User"}</span>
-                    <span className={a.decision === "approve" ? "text-success" : "text-destructive"}>{a.decision === "approve" ? "Approved" : "Requested Changes"}</span>
+                    <span className={a.decision === "approve" ? "text-success" : "text-destructive"}>{a.decision === "approve" ? "Approved" : "Rejected"}</span>
                     <span className="text-muted-foreground ml-auto text-xs">{new Date(a.created_at).toLocaleDateString()}</span>
                   </div>
                   {a.note && <p className="mt-1.5 text-xs text-muted-foreground">{a.note}</p>}
@@ -1120,8 +1120,8 @@ function AdrDetail() {
                           <div className="text-xs">
                             {myReviewDecision === "request_changes" ? (
                               <span className="font-medium text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
-                                <ThumbsUp className="h-3.5 w-3.5 rotate-180" />
-                                You requested changes
+                                <X className="h-3.5 w-3.5" />
+                                You rejected this ADR
                               </span>
                             ) : (
                               <span className="font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
@@ -1438,15 +1438,15 @@ function AdrDetail() {
                 </div>
               )}
 
-              {/* Changes Requested By List */}
+              {/* Rejected By List */}
               {(data.approvals ?? []).filter((a: any) => a.decision === "request_changes").length > 0 && (
                 <div className="pt-3 border-t border-border/50">
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Changes Requested By</h4>
+                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Rejected By</h4>
                   <div className="space-y-1.5">
                     {(data.approvals ?? []).filter((a: any) => a.decision === "request_changes").map((a: any) => (
                       <div key={a.id} className="flex items-center gap-2 text-xs">
                         <div className="h-5 w-5 rounded-full bg-rose-500/10 flex items-center justify-center shrink-0">
-                          <ThumbsUp className="h-2.5 w-2.5 text-rose-600 dark:text-rose-400 rotate-180" />
+                          <X className="h-2.5 w-2.5 text-rose-600 dark:text-rose-400" />
                         </div>
                         <span className="truncate font-medium">
                           {a.profiles?.full_name ?? "User"}
@@ -1520,7 +1520,7 @@ function AdrDetail() {
                           )}
                           {isChangesRequested && (
                             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
-                              <XCircle className="h-2.5 w-2.5" /> Changes Req
+                              <XCircle className="h-2.5 w-2.5" /> Rejected
                             </span>
                           )}
 
@@ -1790,7 +1790,7 @@ function getTimelineBadge(type: string) {
     case "changes_requested":
       return {
         icon: <X className="h-2.5 w-2.5 text-rose-500" />,
-        label: "Changes Requested",
+        label: "Rejected",
         color: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20",
       };
     case "approval_revoked":
