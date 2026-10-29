@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
-  getAdr, updateAdrStatus, approveAdr, addComment,
+  getAdr, updateAdrStatus, approveAdr, revokeAdrApproval, addComment,
   getAdrRelationships, addAdrRelationship, removeAdrRelationship, publishAdr,
   searchAdrs, deleteAdr
 } from "@/lib/api/decyra.functions";
@@ -49,6 +49,7 @@ function AdrDetail() {
   const getAdrFn = useServerFn(getAdr);
   const updateStatusFn = useServerFn(updateAdrStatus);
   const approveFn = useServerFn(approveAdr);
+  const revokeApprovalFn = useServerFn(revokeAdrApproval);
   const commentFn = useServerFn(addComment);
   const getRelFn = useServerFn(getAdrRelationships);
   const addRelFn = useServerFn(addAdrRelationship);
@@ -86,6 +87,12 @@ function AdrDetail() {
   const canPublish = isAdmin || myRole === "project_admin";
   const canApprove = myRole !== "intern" && (isAdmin || myRole);
   const nextStatus = adr ? STATUS_FLOW[adr.status] : null;
+  const hasUserApproved = Boolean(
+    data?.hasUserApproved ??
+      (data?.approvals ?? []).some(
+        (a: any) => a.user_id === data?.currentUserId && a.decision === "approve",
+      ),
+  );
 
   async function moveStatus() {
     if (!nextStatus || !adr) return;
@@ -120,6 +127,20 @@ function AdrDetail() {
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
     } catch (err: any) { toast.error(getErrorMessage(err, "Failed to submit review")); }
     finally { setBusy(""); }
+  }
+
+  async function handleRevokeApproval() {
+    setBusy("revoke");
+    try {
+      await revokeApprovalFn({ data: { adr_id: adrId } });
+      toast.success("ADR approval revoked");
+      qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to revoke approval"));
+    } finally {
+      setBusy("");
+    }
   }
 
   async function submitComment() {
@@ -450,22 +471,53 @@ function AdrDetail() {
               </button>
             )}
 
-            {/* Approve/Reject (under review) */}
+            {/* Approve/Reject / Revoke (under review) */}
             {adr.status === "under_review" && canApprove && (
               <div className="space-y-2">
-                <textarea value={approvalNote} onChange={(e) => setApprovalNote(e.target.value)}
-                  rows={2} placeholder="Optional review note…"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs resize-none" />
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => submitApproval("approve")} disabled={busy === "approve"}
-                    className="h-8 rounded-md bg-success px-2 text-xs font-medium text-success-foreground hover:opacity-90 disabled:opacity-50">
-                    Approve
-                  </button>
-                  <button onClick={() => submitApproval("request_changes")} disabled={busy === "approve"}
-                    className="h-8 rounded-md bg-destructive px-2 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
-                    Reject
-                  </button>
-                </div>
+                {hasUserApproved ? (
+                  <div className="space-y-2 rounded-lg border border-success/30 bg-success/5 p-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-success flex items-center gap-1.5">
+                        <ThumbsUp className="h-3.5 w-3.5 text-success" />
+                        You approved this ADR
+                      </span>
+                    </div>
+                    <button
+                      onClick={handleRevokeApproval}
+                      disabled={busy === "revoke"}
+                      className="w-full h-8 rounded-md border border-destructive/40 bg-card px-2 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {busy === "revoke" ? "Revoking…" : "Revoke Approval"}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <textarea
+                      value={approvalNote}
+                      onChange={(e) => setApprovalNote(e.target.value)}
+                      rows={2}
+                      placeholder="Optional review note…"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs resize-none"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => submitApproval("approve")}
+                        disabled={busy === "approve"}
+                        className="h-8 rounded-md bg-success px-2 text-xs font-medium text-success-foreground hover:opacity-90 disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => submitApproval("request_changes")}
+                        disabled={busy === "approve"}
+                        className="h-8 rounded-md bg-destructive px-2 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -508,7 +560,10 @@ function AdrDetail() {
                     <div className="h-5 w-5 rounded-full bg-success/10 flex items-center justify-center shrink-0">
                       <ThumbsUp className="h-2.5 w-2.5 text-success" />
                     </div>
-                    <span className="truncate font-medium">{a.profiles?.full_name ?? "User"}</span>
+                    <span className="truncate font-medium">
+                      {a.profiles?.full_name ?? "User"}
+                      {a.user_id === data?.currentUserId ? " (you)" : ""}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -525,7 +580,10 @@ function AdrDetail() {
                     <div className="h-5 w-5 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
                       <ThumbsUp className="h-2.5 w-2.5 text-destructive rotate-180" />
                     </div>
-                    <span className="truncate font-medium">{a.profiles?.full_name ?? "User"}</span>
+                    <span className="truncate font-medium">
+                      {a.profiles?.full_name ?? "User"}
+                      {a.user_id === data?.currentUserId ? " (you)" : ""}
+                    </span>
                   </div>
                 ))}
               </div>

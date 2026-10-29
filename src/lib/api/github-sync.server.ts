@@ -305,6 +305,9 @@ async function updateTrackedAdr(
       adr.id,
     ],
   );
+  if (contentChanged) {
+    await localQuery("DELETE FROM approvals WHERE adr_id = $1 AND decision = 'approve'", [adr.id]);
+  }
 }
 
 async function syncMarkdownFile(

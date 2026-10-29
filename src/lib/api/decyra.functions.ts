@@ -1653,6 +1653,17 @@ export const getAdr = createServerFn({ method: "POST" })
       throw new Error("Unauthorized: You do not have access to this ADR's project.");
     }
 
+    const hasUserApproved = (approvalsRow.rows ?? []).some(
+      (a: any) => a.user_id === userId && a.decision === "approve",
+    );
+    const myApprovalRow = (approvalsRow.rows ?? []).find((a: any) => a.user_id === userId);
+    const myApproval = myApprovalRow
+      ? {
+          ...myApprovalRow,
+          profiles: { full_name: myApprovalRow.full_name, email: myApprovalRow.email },
+        }
+      : null;
+
     return {
       adr: shaped,
       approvals: shapeWithProfiles(approvalsRow.rows ?? []),
@@ -1660,6 +1671,9 @@ export const getAdr = createServerFn({ method: "POST" })
       publishedVersions: shapeWithProfiles(versionsRow.rows ?? []),
       isAdmin,
       myRole,
+      currentUserId: userId,
+      hasUserApproved,
+      myApproval,
     };
   });
 
@@ -1837,7 +1851,77 @@ export const updateAdrStatus = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-// ─── approveAdr ───────────────────────────────────────────────────────────────
+// ─── approveAdr & revokeAdrApproval ──────────────────────────────────────────
+
+export async function approveAdrService(
+  userId: string,
+  data: { adr_id: string; decision: "approve" | "request_changes"; note?: string },
+) {
+  const adr = await pgOne<{ status: string; author_id: string; project_id: string }>(
+    "SELECT status, author_id, project_id FROM adrs WHERE id = $1",
+    [data.adr_id],
+  );
+  if (!adr) throw new Error("ADR not found.");
+  assertDraftAdrOwner(adr, userId);
+
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, adr.project_id],
+  );
+  if (!isAdmin && !member) {
+    throw new Error("Only project members or platform admins can review ADRs.");
+  }
+  if (member && member.role === "intern" && !isAdmin) {
+    throw new Error("Interns cannot approve ADRs.");
+  }
+
+  await pgQuery(
+    `INSERT INTO approvals (adr_id, user_id, decision, note)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (adr_id, user_id) DO UPDATE
+       SET decision = EXCLUDED.decision, note = EXCLUDED.note`,
+    [data.adr_id, userId, data.decision, data.note ?? null],
+  );
+  return { ok: true };
+}
+
+export async function revokeAdrApprovalService(userId: string, adrId: string) {
+  const adr = await pgOne<{ status: string; author_id: string; project_id: string }>(
+    "SELECT status, author_id, project_id FROM adrs WHERE id = $1",
+    [adrId],
+  );
+  if (!adr) throw new Error("ADR not found.");
+  assertDraftAdrOwner(adr, userId);
+
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, adr.project_id],
+  );
+  if (!isAdmin && !member) {
+    throw new Error("Only project members or platform admins can revoke approvals.");
+  }
+  if (adr.status === "published") {
+    throw new Error("Cannot revoke approval for a published ADR.");
+  }
+
+  await pgQuery("DELETE FROM approvals WHERE adr_id = $1 AND user_id = $2", [adrId, userId]);
+
+  let statusReverted = false;
+  if (adr.status === "approved") {
+    await pgQuery("UPDATE adrs SET status = 'under_review' WHERE id = $1", [adrId]);
+    statusReverted = true;
+  }
+
+  return { ok: true, statusReverted };
+}
 
 export const approveAdr = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
@@ -1852,16 +1936,24 @@ export const approveAdr = createServerFn({ method: "POST" })
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
-    await assertDraftAdrVisible(context, data.adr_id);
+    return approveAdrService(context.userId, data);
+  });
 
-    await pgQuery(
-      `INSERT INTO approvals (adr_id, user_id, decision, note)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (adr_id, user_id) DO UPDATE
-         SET decision = EXCLUDED.decision, note = EXCLUDED.note`,
-      [data.adr_id, userId, data.decision, data.note ?? null],
-    );
+export const revokeAdrApproval = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        adr_id: z.string().uuid(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const result = await revokeAdrApprovalService(context.userId, data.adr_id);
+    if (result.statusReverted) {
+      await publishAdrCollaborationSignal(context, data.adr_id, "status", "under_review");
+    }
     return { ok: true };
   });
 
@@ -2201,66 +2293,83 @@ const adrFieldsSchema = z.object({
   references_data: z.any().optional(),
 });
 
+export async function updateAdrService(userId: string, data: z.infer<typeof adrFieldsSchema>) {
+  // Check project_member or admin
+  const adr = await pgOne<any>(
+    "SELECT status, project_id, author_id, title, context, decision, consequences FROM adrs WHERE id = $1",
+    [data.id],
+  );
+  if (!adr) throw new Error("ADR not found");
+  assertDraftAdrOwner(adr, userId);
+  const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'", [
+    userId,
+  ]));
+  const isProjectMember = !!(await pgOne(
+    "SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2",
+    [userId, adr.project_id],
+  ));
+  if (!isAdmin && !isProjectMember) throw new Error("Not authorized to edit this ADR");
+  assertRequiredAdrContent({
+    title: data.title ?? adr.title,
+    context: data.context ?? adr.context,
+    decision: data.decision ?? adr.decision,
+    consequences: data.consequences ?? adr.consequences,
+  });
+
+  const fields: string[] = [];
+  const vals: any[] = [];
+  let p = 1;
+  const set = (col: string, val: any, cast = "") => {
+    if (val !== undefined) {
+      fields.push(`${col} = $${p++}${cast}`);
+      if (cast === "::jsonb") {
+        vals.push(JSON.stringify(val));
+      } else {
+        vals.push(val);
+      }
+    }
+  };
+  set("title", data.title);
+  set("tags", data.tags, "::text[]");
+  set("context", data.context);
+  set("decision", data.decision);
+  set("consequences", data.consequences);
+  set("alternatives", data.alternatives);
+  set("design_changes", data.design_changes, "::jsonb");
+  set("major_impacts", data.major_impacts, "::jsonb");
+  set("references_data", data.references_data, "::jsonb");
+
+  let nextStatus: string | null = null;
+  if (adr.status === "published" || adr.status === "superseded") {
+    fields.push(`status = $${p++}`);
+    vals.push("draft");
+    nextStatus = "draft";
+  } else if (adr.status === "approved") {
+    fields.push(`status = $${p++}`);
+    vals.push("under_review");
+    nextStatus = "under_review";
+  }
+
+  if (!fields.length) return { ok: true, nextStatus: null };
+  vals.push(data.id);
+  await pgQuery(`UPDATE adrs SET ${fields.join(", ")} WHERE id = $${p}`, vals);
+
+  // Revoke approvals because the ADR content was edited/updated,
+  // allowing reviewers to re-verify the new edits and approve again.
+  await pgQuery("DELETE FROM approvals WHERE adr_id = $1 AND decision = 'approve'", [data.id]);
+
+  return { ok: true, nextStatus };
+}
+
 export const updateAdr = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => adrFieldsSchema.parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
-
-    // Check project_member or admin
-    const adr = await pgOne<any>(
-      "SELECT status, project_id, author_id, title, context, decision, consequences FROM adrs WHERE id = $1",
-      [data.id],
-    );
-    if (!adr) throw new Error("ADR not found");
-    assertDraftAdrOwner(adr, userId);
-    const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'", [
-      userId,
-    ]));
-    const isProjectMember = !!(await pgOne(
-      "SELECT 1 FROM project_members WHERE user_id=$1 AND project_id=$2",
-      [userId, adr.project_id],
-    ));
-    if (!isAdmin && !isProjectMember) throw new Error("Not authorized to edit this ADR");
-    assertRequiredAdrContent({
-      title: data.title ?? adr.title,
-      context: data.context ?? adr.context,
-      decision: data.decision ?? adr.decision,
-      consequences: data.consequences ?? adr.consequences,
-    });
-
-    const fields: string[] = [];
-    const vals: any[] = [];
-    let p = 1;
-    const set = (col: string, val: any, cast = "") => {
-      if (val !== undefined) {
-        fields.push(`${col} = $${p++}${cast}`);
-        if (cast === "::jsonb") {
-          vals.push(JSON.stringify(val));
-        } else {
-          vals.push(val);
-        }
-      }
-    };
-    set("title", data.title);
-    set("tags", data.tags, "::text[]");
-    set("context", data.context);
-    set("decision", data.decision);
-    set("consequences", data.consequences);
-    set("alternatives", data.alternatives);
-    set("design_changes", data.design_changes, "::jsonb");
-    set("major_impacts", data.major_impacts, "::jsonb");
-    set("references_data", data.references_data, "::jsonb");
-
-    if (adr.status === "published" || adr.status === "superseded") {
-      fields.push(`status = $${p++}`);
-      vals.push("draft");
+    const result = await updateAdrService(context.userId, data);
+    if (result.nextStatus) {
+      await publishAdrCollaborationSignal(context, data.id, "status", result.nextStatus);
     }
-
-    if (!fields.length) return { ok: true };
-    vals.push(data.id);
-    await pgQuery(`UPDATE adrs SET ${fields.join(", ")} WHERE id = $${p}`, vals);
     return { ok: true };
   });
 
