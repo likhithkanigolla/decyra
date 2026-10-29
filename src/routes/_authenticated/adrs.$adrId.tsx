@@ -4,7 +4,8 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   getAdr, updateAdrStatus, approveAdr, revokeAdrApproval, addComment,
   getAdrRelationships, addAdrRelationship, removeAdrRelationship, publishAdr,
-  searchAdrs, deleteAdr, assignAdrReviewer, resolveComment, submitFinalDecision
+  searchAdrs, deleteAdr, assignAdrReviewer, resolveComment, submitFinalDecision,
+  requestAdrReview, revokeAdrReviewRequest
 } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { SimpleMarkdown } from "@/components/decyra/RichEditor";
@@ -60,6 +61,8 @@ function AdrDetail() {
   const searchFn = useServerFn(searchAdrs);
   const deleteAdrFn = useServerFn(deleteAdr);
   const assignReviewerFn = useServerFn(assignAdrReviewer);
+  const requestReviewFn = useServerFn(requestAdrReview);
+  const revokeReviewRequestFn = useServerFn(revokeAdrReviewRequest);
   const resolveCommentFn = useServerFn(resolveComment);
   const finalDecisionFn = useServerFn(submitFinalDecision);
 
@@ -155,6 +158,10 @@ function AdrDetail() {
   const userPersonallyRejected = myReviewDecision === "request_changes";
   const isApproveOverride = approvedCount < requiredApprovals || rejectedCount > 0 || userPersonallyRejected;
 
+  const reviewRequests: any[] = (data as any)?.reviewRequests ?? [];
+  const pendingReviewers: any[] = (data as any)?.pendingReviewers ?? [];
+  const isLockedByReviewers = pendingReviewers.length > 0;
+
   function autoFillAdminRationale(decision: "approved" | "rejected") {
     if (decision === "approved") {
       if (isApproveOverride) {
@@ -178,6 +185,12 @@ function AdrDetail() {
   }
 
   async function handlePublish(publishAs?: "published" | "rejected") {
+    if (isLockedByReviewers) {
+      toast.error(
+        `Cannot publish ADR: Review is still pending from requested reviewer(s): ${pendingReviewers.map((r: any) => '@' + (r.username || r.full_name || 'user')).join(', ')}. Requested reviews must be completed or explicitly revoked.`
+      );
+      return;
+    }
     setBusy("publish");
     try {
       const result = await publishFn({ data: { adr_id: adrId, publish_as: publishAs } });
@@ -262,6 +275,37 @@ function AdrDetail() {
     }
   }
 
+  async function handleRequestReview(reviewerId: string) {
+    if (!reviewerId) return;
+    setBusy("request_review");
+    try {
+      await requestReviewFn({ data: { adr_id: adrId, reviewer_id: reviewerId } });
+      toast.success("Review requested");
+      qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to request review"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleRevokeReviewRequest(reviewerId: string) {
+    setBusy("revoke_review");
+    try {
+      await revokeReviewRequestFn({ data: { adr_id: adrId, reviewer_id: reviewerId } });
+      toast.success("Review request revoked and logged");
+      qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to revoke review request"));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function handleToggleResolve(commentId: string, isResolved: boolean) {
     try {
       await resolveCommentFn({ data: { comment_id: commentId, is_resolved: isResolved } });
@@ -275,6 +319,12 @@ function AdrDetail() {
   }
 
   async function handleFinalDecision(decision: "approved" | "rejected") {
+    if (isLockedByReviewers) {
+      toast.error(
+        `Cannot make final decision: Review is still pending from requested reviewer(s): ${pendingReviewers.map((r: any) => '@' + (r.username || r.full_name || 'user')).join(', ')}. Requested reviews must be completed or explicitly revoked.`
+      );
+      return;
+    }
     if (decision === "approved" && isApproveOverride && finalComment.trim().length < 15) {
       toast.error("A detailed rationale comment (at least 15 characters) is mandatory when overriding review criteria or rejections.");
       return;
@@ -1200,13 +1250,28 @@ function AdrDetail() {
                         </div>
                       </div>
 
+                      {isLockedByReviewers && (
+                        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-200 space-y-1">
+                          <div className="font-semibold flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                            <span>Decision Locked by Pending Reviews</span>
+                          </div>
+                          <p className="text-[10px] leading-relaxed text-muted-foreground">
+                            Waiting for: {pendingReviewers.map((r: any) => '@' + (r.username || r.full_name || 'user')).join(', ')}.
+                            Till they make their decision or an admin/requester revokes their review request, no final decision can be made.
+                          </p>
+                        </div>
+                      )}
+
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
                           onClick={() => handleFinalDecision("approved")}
-                          disabled={busy === "final_decision" || (isApproveOverride && finalComment.trim().length < 15)}
+                          disabled={busy === "final_decision" || isLockedByReviewers || (isApproveOverride && finalComment.trim().length < 15)}
                           title={
-                            isApproveOverride && finalComment.trim().length < 15
+                            isLockedByReviewers
+                              ? "Final decision locked: pending reviews from " + pendingReviewers.map((r: any) => '@' + (r.username || r.full_name)).join(', ')
+                              : isApproveOverride && finalComment.trim().length < 15
                               ? "Provide at least 15 characters rationale explaining the override"
                               : "Approve this ADR authoritatively"
                           }
@@ -1218,7 +1283,12 @@ function AdrDetail() {
                         <button
                           type="button"
                           onClick={() => handleFinalDecision("rejected")}
-                          disabled={busy === "final_decision"}
+                          disabled={busy === "final_decision" || isLockedByReviewers}
+                          title={
+                            isLockedByReviewers
+                              ? "Final decision locked: pending reviews from " + pendingReviewers.map((r: any) => '@' + (r.username || r.full_name)).join(', ')
+                              : "Reject this ADR authoritatively"
+                          }
                           className="h-8.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors cursor-pointer"
                         >
                           <X className="h-3.5 w-3.5" />
@@ -1255,14 +1325,28 @@ function AdrDetail() {
               {/* Approved Status Actions */}
               {adr.status === "approved" && !isFinalized && (
                 canPublish ? (
-                  <button
-                    onClick={() => handlePublish("published")}
-                    disabled={busy === "publish"}
-                    className="w-full h-9 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-2 shadow-2xs transition-colors"
-                  >
-                    <Rocket className="h-3.5 w-3.5" />
-                    {busy === "publish" ? "Publishing…" : "Publish ADR to Git"}
-                  </button>
+                  <div className="space-y-2">
+                    {isLockedByReviewers && (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-200">
+                        <div className="flex items-center gap-1.5 font-semibold text-amber-700 dark:text-amber-300">
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                          <span>Publish Locked</span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-muted-foreground leading-normal">
+                          Review pending from {pendingReviewers.map((r: any) => '@' + (r.username || r.full_name || 'user')).join(', ')}. Complete or revoke to publish.
+                        </p>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => handlePublish("published")}
+                      disabled={busy === "publish" || isLockedByReviewers}
+                      title={isLockedByReviewers ? "Publish locked by pending reviews" : undefined}
+                      className="w-full h-9 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-2 shadow-2xs transition-colors"
+                    >
+                      <Rocket className="h-3.5 w-3.5" />
+                      {busy === "publish" ? "Publishing…" : "Publish ADR to Git"}
+                    </button>
+                  </div>
                 ) : (
                   <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs">
                     <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400">
@@ -1279,14 +1363,28 @@ function AdrDetail() {
               {/* Rejected Status Actions */}
               {adr.status === "rejected" && !isFinalized && (
                 canPublish ? (
-                  <button
-                    onClick={() => handlePublish("rejected")}
-                    disabled={busy === "publish"}
-                    className="w-full h-9 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-2 shadow-2xs transition-colors"
-                  >
-                    <Rocket className="h-3.5 w-3.5" />
-                    {busy === "publish" ? "Publishing…" : "Publish Rejected ADR"}
-                  </button>
+                  <div className="space-y-2">
+                    {isLockedByReviewers && (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-200">
+                        <div className="flex items-center gap-1.5 font-semibold text-amber-700 dark:text-amber-300">
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                          <span>Publish Locked</span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-muted-foreground leading-normal">
+                          Review pending from {pendingReviewers.map((r: any) => '@' + (r.username || r.full_name || 'user')).join(', ')}. Complete or revoke to publish.
+                        </p>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => handlePublish("rejected")}
+                      disabled={busy === "publish" || isLockedByReviewers}
+                      title={isLockedByReviewers ? "Publish locked by pending reviews" : undefined}
+                      className="w-full h-9 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-2 shadow-2xs transition-colors"
+                    >
+                      <Rocket className="h-3.5 w-3.5" />
+                      {busy === "publish" ? "Publishing…" : "Publish Rejected ADR"}
+                    </button>
+                  </div>
                 ) : (
                   <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3 text-xs">
                     <div className="flex items-center gap-2 font-semibold text-rose-600 dark:text-rose-400">
@@ -1341,40 +1439,113 @@ function AdrDetail() {
               )}
             </div>
 
-            {/* Reviewer Assignment Card */}
+            {/* Reviewers Management Card (Multiple Reviewers) */}
             <div className="rounded-xl border border-border bg-card p-4.5 shadow-2xs space-y-3">
               <div className="flex items-center justify-between pb-2 border-b border-border/60">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Assigned Reviewer</h3>
+                <div className="flex items-center gap-1.5">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    Reviewers {reviewRequests.length > 0 && `(${reviewRequests.length})`}
+                  </h3>
+                  {isLockedByReviewers && (
+                    <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/15 px-1.5 py-0.5 rounded border border-amber-500/30 flex items-center gap-0.5">
+                      <Clock className="h-2.5 w-2.5" /> {pendingReviewers.length} pending
+                    </span>
+                  )}
+                </div>
                 <UserCheck className="h-3.5 w-3.5 text-amber-500" />
               </div>
 
-              {adr.assigned_to_profile ? (
-                <div className="flex items-center gap-2.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
-                  <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-amber-500/20 text-xs font-bold text-amber-600 dark:text-amber-400">
-                    {(adr.assigned_to_profile.full_name || adr.assigned_to_profile.username || "?").slice(0, 1).toUpperCase()}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold text-foreground truncate">{adr.assigned_to_profile.full_name}</div>
-                    <div className="text-[10px] text-muted-foreground truncate">@{adr.assigned_to_profile.username}</div>
-                  </div>
+              {reviewRequests.length > 0 ? (
+                <div className="space-y-2">
+                  {reviewRequests.map((r: any) => {
+                    const isPending = r.is_pending;
+                    const isApproved = r.reviewer_decision === "approve";
+                    const isChangesRequested = r.reviewer_decision === "request_changes";
+                    const canRevokeThis =
+                      canPublish ||
+                      data?.currentUserId === r.requested_by ||
+                      data?.currentUserId === r.reviewer_id ||
+                      data?.currentUserId === adr?.author_id;
+
+                    return (
+                      <div
+                        key={r.id || r.reviewer_id}
+                        className="flex items-center justify-between gap-2 p-2 rounded-lg bg-muted/40 border border-border/60 text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                            {(r.full_name || r.username || "?").slice(0, 1).toUpperCase()}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold text-foreground truncate">
+                              {r.full_name || r.username}
+                              {r.reviewer_id === data?.currentUserId && " (you)"}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground truncate">
+                              @{r.username || "user"}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {isPending && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                              <Clock className="h-2.5 w-2.5" /> Pending
+                            </span>
+                          )}
+                          {isApproved && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                              <CheckCircle2 className="h-2.5 w-2.5" /> Approved
+                            </span>
+                          )}
+                          {isChangesRequested && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+                              <XCircle className="h-2.5 w-2.5" /> Changes Req
+                            </span>
+                          )}
+
+                          {canRevokeThis && !isFinalized && (
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeReviewRequest(r.reviewer_id)}
+                              disabled={busy === "revoke_review"}
+                              title="Revoke review request (unblocks decisions and logged in audit timeline)"
+                              className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
-                <p className="text-xs text-muted-foreground italic">No reviewer assigned yet.</p>
+                <p className="text-xs text-muted-foreground italic">No reviewers requested yet.</p>
               )}
 
-              <select
-                value={adr.assigned_to ?? ""}
-                onChange={(e) => handleAssignReviewer(e.target.value ? e.target.value : null)}
-                disabled={busy === "assign"}
-                className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
-              >
-                <option value="">{adr.assigned_to ? "Change or unassign reviewer…" : "Assign a reviewer…"}</option>
-                {(data.projectMembers ?? []).map((m: any) => (
-                  <option key={m.user_id} value={m.user_id}>
-                    {m.full_name ? `${m.full_name} (@${m.username || 'user'})` : m.username || m.email}
-                  </option>
-                ))}
-              </select>
+              {/* Add / Request another reviewer */}
+              {!isFinalized && (
+                <div className="pt-2 border-t border-border/40">
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) handleRequestReview(e.target.value);
+                    }}
+                    disabled={busy === "request_review"}
+                    className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+                  >
+                    <option value="">+ Request review from member…</option>
+                    {(data.projectMembers ?? [])
+                      .filter((m: any) => !reviewRequests.some((r: any) => r.reviewer_id === m.user_id && r.status !== "revoked"))
+                      .map((m: any) => (
+                        <option key={m.user_id} value={m.user_id}>
+                          {m.full_name ? `${m.full_name} (@${m.username || 'user'})` : m.username || m.email}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             {/* Relationships Card */}
@@ -1577,6 +1748,18 @@ function getTimelineBadge(type: string) {
         icon: <UserCheck className="h-2.5 w-2.5 text-purple-500" />,
         label: "Reviewer Assigned",
         color: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
+      };
+    case "review_requested":
+      return {
+        icon: <UserCheck className="h-2.5 w-2.5 text-blue-500" />,
+        label: "Review Requested",
+        color: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
+      };
+    case "review_request_revoked":
+      return {
+        icon: <X className="h-2.5 w-2.5 text-amber-500" />,
+        label: "Review Revoked",
+        color: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
       };
     case "approved":
       return {

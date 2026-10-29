@@ -1678,7 +1678,7 @@ export async function getAdrService(userId: string, data: { id: string }) {
       },
     };
 
-    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow, membersRow, timelineRow, projectAdrsRow] = await Promise.all([
+    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow, membersRow, timelineRow, projectAdrsRow, reviewRequestsRow] = await Promise.all([
       pgQuery(
         `SELECT ap.*, pr.full_name, pr.email, pr.username
          FROM approvals ap LEFT JOIN profiles pr ON pr.id = ap.user_id
@@ -1724,6 +1724,18 @@ export async function getAdrService(userId: string, data: { id: string }) {
          FROM adrs a WHERE a.project_id = $1 AND (a.status <> 'draft' OR a.author_id = $2)
          ORDER BY a.adr_number ASC, a.full_id ASC`,
         [adr.proj_id, userId],
+      ),
+      pgQuery(
+        `SELECT rr.*, pr.full_name, pr.username, pr.email, pr.avatar_url,
+                req_pr.full_name AS requester_name, req_pr.username AS requester_username,
+                ap.decision AS reviewer_decision
+         FROM adr_review_requests rr
+         JOIN profiles pr ON pr.id = rr.reviewer_id
+         LEFT JOIN profiles req_pr ON req_pr.id = rr.requested_by
+         LEFT JOIN approvals ap ON ap.adr_id = rr.adr_id AND ap.user_id = rr.reviewer_id
+         WHERE rr.adr_id = $1 AND rr.status <> 'revoked'
+         ORDER BY rr.created_at ASC`,
+        [data.id],
       ),
     ]);
 
@@ -1807,6 +1819,13 @@ export async function getAdrService(userId: string, data: { id: string }) {
         ? allProjectAdrs[currentAdrIndex + 1]
         : null;
 
+    const reviewRequestsList = (reviewRequestsRow?.rows ?? []).map((rr: any) => ({
+      ...rr,
+      decision: rr.reviewer_decision ?? null,
+      is_pending: rr.status === "pending" && !rr.reviewer_decision,
+    }));
+    const pendingReviewers = reviewRequestsList.filter((rr: any) => rr.is_pending);
+
     return {
       adr: shaped,
       approvals: shapeWithProfiles(approvalsRow.rows ?? []),
@@ -1825,6 +1844,8 @@ export async function getAdrService(userId: string, data: { id: string }) {
       nextAdr,
       currentIndex: currentAdrIndex >= 0 ? currentAdrIndex + 1 : null,
       totalAdrs: allProjectAdrs.length,
+      reviewRequests: reviewRequestsList,
+      pendingReviewers,
     };
 }
 
@@ -2046,6 +2067,11 @@ export async function approveAdrService(
   );
 
   const isApprove = data.decision === "approve";
+  await pgQuery(
+    "UPDATE adr_review_requests SET status = 'completed', updated_at = now() WHERE adr_id = $1 AND reviewer_id = $2 AND status = 'pending'",
+    [data.adr_id, userId],
+  );
+
   await recordAdrTimelineEvent({
     adr_id: data.adr_id,
     user_id: userId,
@@ -2086,6 +2112,11 @@ export async function revokeAdrApprovalService(userId: string, adrId: string) {
   );
 
   await pgQuery("DELETE FROM approvals WHERE adr_id = $1 AND user_id = $2", [adrId, userId]);
+
+  await pgQuery(
+    "UPDATE adr_review_requests SET status = 'pending', updated_at = now() WHERE adr_id = $1 AND reviewer_id = $2 AND status = 'completed'",
+    [adrId, userId],
+  );
 
   let statusReverted = false;
   if (adr.status === "approved" && (!existing || existing.decision !== "request_changes")) {
@@ -2153,6 +2184,30 @@ export async function submitFinalDecisionService(
   );
   if (!isAdmin && member?.role !== "project_admin") {
     throw new Error("Only project admins or platform admins can make final approval or rejection decisions.");
+  }
+
+  // Check for pending review requests from requested reviewers.
+  // Until all requested reviewers have submitted their decision or had their request revoked,
+  // no one (not even admin) can make the final call.
+  const pendingRequests = await pgQuery<{
+    reviewer_id: string;
+    full_name: string;
+    username: string;
+  }>(
+    `SELECT rr.reviewer_id, pr.full_name, pr.username
+     FROM adr_review_requests rr
+     JOIN profiles pr ON pr.id = rr.reviewer_id
+     LEFT JOIN approvals ap ON ap.adr_id = rr.adr_id AND ap.user_id = rr.reviewer_id
+     WHERE rr.adr_id = $1 AND rr.status = 'pending' AND ap.decision IS NULL`,
+    [data.adr_id],
+  );
+  if ((pendingRequests.rows?.length ?? 0) > 0) {
+    const pendingNames = pendingRequests.rows
+      .map((r) => `@${r.username || r.full_name || "user"}`)
+      .join(", ");
+    throw new Error(
+      `Cannot make final decision: Review is still pending from requested reviewer(s): ${pendingNames}. Requested reviews must be completed or explicitly revoked before making a final decision.`,
+    );
   }
 
   // Fetch current approvals to check if criteria were satisfied or if an override applies
@@ -2450,6 +2505,14 @@ export async function assignAdrReviewerService(
       );
     }
 
+    await pgQuery(
+      `INSERT INTO adr_review_requests (adr_id, reviewer_id, requested_by, status, updated_at)
+       VALUES ($1, $2, $3, 'pending', now())
+       ON CONFLICT (adr_id, reviewer_id) DO UPDATE
+         SET status = 'pending', requested_by = EXCLUDED.requested_by, updated_at = now()`,
+      [data.adr_id, data.reviewer_id, userId],
+    );
+
     await recordAdrTimelineEvent({
       adr_id: data.adr_id,
       user_id: userId,
@@ -2458,6 +2521,13 @@ export async function assignAdrReviewerService(
       changes: { reviewer_id: data.reviewer_id, reviewer_handle: reviewerHandle },
     });
   } else {
+    if (adr.assigned_to) {
+      await pgQuery(
+        "UPDATE adr_review_requests SET status = 'revoked', updated_at = now() WHERE adr_id = $1 AND reviewer_id = $2",
+        [data.adr_id, adr.assigned_to],
+      );
+    }
+
     const timelineComment = "📋 Unassigned reviewer from this ADR.";
     await pgQuery("INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)", [
       data.adr_id,
@@ -2490,6 +2560,230 @@ export const assignAdrReviewer = createServerFn({ method: "POST" })
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
     return assignAdrReviewerService(context.userId, data);
+  });
+
+// ─── requestAdrReview ─────────────────────────────────────────────────────────
+
+export async function requestAdrReviewService(
+  userId: string,
+  data: { adr_id: string; reviewer_id: string },
+) {
+  const adr = await pgOne<any>(
+    `SELECT a.id, a.full_id, a.title, a.project_id, a.author_id, a.status, a.current_version, a.assigned_to
+     FROM adrs a WHERE a.id = $1`,
+    [data.adr_id],
+  );
+  if (!adr) throw new Error("ADR not found.");
+  assertDraftAdrOwner(adr, userId);
+
+  if ((adr.current_version ?? 0) > 0 || adr.status === "published" || adr.status === "superseded") {
+    throw new Error("Cannot request reviews on a published or finalized ADR.");
+  }
+
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, adr.project_id],
+  );
+  if (!isAdmin && !member) {
+    throw new Error("Only project members or platform admins can request reviews.");
+  }
+
+  const reviewerMember = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [data.reviewer_id, adr.project_id],
+  );
+  const reviewerIsAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [data.reviewer_id],
+  ));
+  if (!reviewerMember && !reviewerIsAdmin) {
+    throw new Error("Target reviewer is not a member of this project.");
+  }
+
+  if (reviewerMember?.role === "intern" && !reviewerIsAdmin) {
+    throw new Error("Interns cannot review or approve ADRs.");
+  }
+
+  // Insert or update review request
+  await pgQuery(
+    `INSERT INTO adr_review_requests (adr_id, reviewer_id, requested_by, status, updated_at)
+     VALUES ($1, $2, $3, 'pending', now())
+     ON CONFLICT (adr_id, reviewer_id) DO UPDATE
+       SET status = 'pending', requested_by = EXCLUDED.requested_by, updated_at = now()`,
+    [data.adr_id, data.reviewer_id, userId],
+  );
+
+  // If ADR doesn't have an assigned reviewer yet, also assign them as primary assigned_to
+  if (!adr.assigned_to) {
+    await pgQuery("UPDATE adrs SET assigned_to = $1 WHERE id = $2", [data.reviewer_id, data.adr_id]);
+  }
+
+  const requester = await pgOne<any>("SELECT full_name, username FROM profiles WHERE id = $1", [
+    userId,
+  ]);
+  const requesterName = requester?.full_name || requester?.username || "A user";
+
+  const reviewer = await pgOne<any>("SELECT full_name, username FROM profiles WHERE id = $1", [
+    data.reviewer_id,
+  ]);
+  const reviewerHandle = reviewer?.username ? `@${reviewer.username}` : reviewer?.full_name || "reviewer";
+
+  // Post comment in discussion
+  const timelineComment = `📋 Requested review from ${reviewerHandle}.`;
+  await pgQuery("INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)", [
+    data.adr_id,
+    userId,
+    timelineComment,
+  ]);
+
+  // Send notification
+  if (data.reviewer_id !== userId) {
+    await pgQuery(
+      `INSERT INTO notifications (user_id, actor_id, type, title, message, link)
+       VALUES ($1, $2, 'assignment', $3, $4, $5)`,
+      [
+        data.reviewer_id,
+        userId,
+        `Review requested for ${adr.full_id}`,
+        `${requesterName} requested your review on "${adr.title}".`,
+        `/adrs/${adr.id}`,
+      ],
+    );
+  }
+
+  await recordAdrTimelineEvent({
+    adr_id: data.adr_id,
+    user_id: userId,
+    event_type: "review_requested",
+    summary: `Requested review from ${reviewerHandle}`,
+    changes: { reviewer_id: data.reviewer_id, reviewer_handle: reviewerHandle, requested_by: userId },
+  });
+
+  return { ok: true };
+}
+
+export const requestAdrReview = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        adr_id: z.string().uuid(),
+        reviewer_id: z.string().uuid(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return requestAdrReviewService(context.userId, data);
+  });
+
+// ─── revokeAdrReviewRequest ───────────────────────────────────────────────────
+
+export async function revokeAdrReviewRequestService(
+  userId: string,
+  data: { adr_id: string; reviewer_id: string; reason?: string },
+) {
+  const adr = await pgOne<any>(
+    `SELECT a.id, a.full_id, a.title, a.project_id, a.author_id, a.status, a.current_version, a.assigned_to
+     FROM adrs a WHERE a.id = $1`,
+    [data.adr_id],
+  );
+  if (!adr) throw new Error("ADR not found.");
+  assertDraftAdrOwner(adr, userId);
+
+  if ((adr.current_version ?? 0) > 0 || adr.status === "published" || adr.status === "superseded") {
+    throw new Error("Cannot revoke review requests on a published or finalized ADR.");
+  }
+
+  const existingRequest = await pgOne<any>(
+    "SELECT * FROM adr_review_requests WHERE adr_id = $1 AND reviewer_id = $2 AND status <> 'revoked'",
+    [data.adr_id, data.reviewer_id],
+  );
+  if (!existingRequest) {
+    throw new Error("Review request not found or already revoked.");
+  }
+
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, adr.project_id],
+  );
+
+  const isProjectAdmin = member?.role === "project_admin";
+  const isRequester = existingRequest.requested_by === userId;
+  const isReviewerThemselves = data.reviewer_id === userId;
+  const isAuthor = adr.author_id === userId;
+
+  if (!isAdmin && !isProjectAdmin && !isRequester && !isReviewerThemselves && !isAuthor) {
+    throw new Error("Only an admin, the review requester, the ADR author, or the reviewer can revoke this review request.");
+  }
+
+  // Update status to revoked
+  await pgQuery(
+    "UPDATE adr_review_requests SET status = 'revoked', updated_at = now() WHERE adr_id = $1 AND reviewer_id = $2",
+    [data.adr_id, data.reviewer_id],
+  );
+
+  // If adr.assigned_to was this reviewer, clear it
+  if (adr.assigned_to === data.reviewer_id) {
+    await pgQuery("UPDATE adrs SET assigned_to = NULL WHERE id = $1", [data.adr_id]);
+  }
+
+  const reviewer = await pgOne<any>("SELECT full_name, username FROM profiles WHERE id = $1", [
+    data.reviewer_id,
+  ]);
+  const reviewerHandle = reviewer?.username ? `@${reviewer.username}` : reviewer?.full_name || "reviewer";
+
+  const revoker = await pgOne<any>("SELECT full_name, username FROM profiles WHERE id = $1", [
+    userId,
+  ]);
+  const revokerHandle = revoker?.username ? `@${revoker.username}` : revoker?.full_name || "user";
+
+  const reasonText = data.reason?.trim() ? ` Reason: ${data.reason.trim()}` : "";
+  const comment = `📋 Revoked review request for ${reviewerHandle} by ${revokerHandle}.${reasonText}`;
+  await pgQuery("INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)", [
+    data.adr_id,
+    userId,
+    comment,
+  ]);
+
+  await recordAdrTimelineEvent({
+    adr_id: data.adr_id,
+    user_id: userId,
+    event_type: "review_request_revoked",
+    summary: `Revoked review request for ${reviewerHandle}`,
+    changes: {
+      reviewer_id: data.reviewer_id,
+      reviewer_handle: reviewerHandle,
+      revoked_by: userId,
+      reason: data.reason ?? null,
+    },
+  });
+
+  return { ok: true };
+}
+
+export const revokeAdrReviewRequest = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        adr_id: z.string().uuid(),
+        reviewer_id: z.string().uuid(),
+        reason: z.string().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return revokeAdrReviewRequestService(context.userId, data);
   });
 
 // ─── resolveComment ───────────────────────────────────────────────────────────
@@ -3543,6 +3837,29 @@ export async function publishAdrService(
   if ((adr.current_version ?? 0) > 0 || adr.status === "published" || adr.status === "superseded") {
     throw new Error(
       "This ADR has already been published. A finalized ADR cannot be republished or overwritten. Create a new ADR to supersede it."
+    );
+  }
+
+  // Check for pending review requests from requested reviewers.
+  // Reviews must be submitted or explicitly revoked before publishing.
+  const pendingRequests = await pgQuery<{
+    reviewer_id: string;
+    full_name: string;
+    username: string;
+  }>(
+    `SELECT rr.reviewer_id, pr.full_name, pr.username
+     FROM adr_review_requests rr
+     JOIN profiles pr ON pr.id = rr.reviewer_id
+     LEFT JOIN approvals ap ON ap.adr_id = rr.adr_id AND ap.user_id = rr.reviewer_id
+     WHERE rr.adr_id = $1 AND rr.status = 'pending' AND ap.decision IS NULL`,
+    [data.adr_id],
+  );
+  if ((pendingRequests.rows?.length ?? 0) > 0) {
+    const pendingNames = pendingRequests.rows
+      .map((r) => `@${r.username || r.full_name || "user"}`)
+      .join(", ");
+    throw new Error(
+      `Cannot publish ADR: Review is still pending from requested reviewer(s): ${pendingNames}. Requested reviews must be completed or explicitly revoked before publishing.`,
     );
   }
 
