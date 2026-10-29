@@ -1643,9 +1643,11 @@ export const getAdr = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
+    return getAdrService(context.userId, data);
+  });
 
-    const adr = await pgOne<any>(
+export async function getAdrService(userId: string, data: { id: string }) {
+  const adr = await pgOne<any>(
       `SELECT a.*, p.id AS proj_id, p.name AS proj_name, p.code AS proj_code, p.required_approvals,
               ass.full_name AS assigned_to_name, ass.username AS assigned_to_username, ass.avatar_url AS assigned_to_avatar
        FROM adrs a
@@ -1717,11 +1719,11 @@ export const getAdr = createServerFn({ method: "POST" })
          WHERE te.adr_id = $1 ORDER BY te.created_at DESC`,
         [data.id],
       ),
-      pgQuery<{ id: string; full_id: string; title: string; status: string }>(
-        `SELECT a.id, a.full_id, a.title, a.status
-         FROM adrs a WHERE a.project_id = $1 AND a.id != $2
-         ORDER BY a.full_id ASC`,
-        [adr.proj_id, data.id],
+      pgQuery<{ id: string; full_id: string; title: string; status: string; adr_number: number }>(
+        `SELECT a.id, a.full_id, a.title, a.status, a.adr_number
+         FROM adrs a WHERE a.project_id = $1 AND (a.status <> 'draft' OR a.author_id = $2)
+         ORDER BY a.adr_number ASC, a.full_id ASC`,
+        [adr.proj_id, userId],
       ),
     ]);
 
@@ -1797,6 +1799,14 @@ export const getAdr = createServerFn({ method: "POST" })
         }
       : null;
 
+    const allProjectAdrs = projectAdrsRow.rows ?? [];
+    const currentAdrIndex = allProjectAdrs.findIndex((a: any) => a.id === data.id);
+    const prevAdr = currentAdrIndex > 0 ? allProjectAdrs[currentAdrIndex - 1] : null;
+    const nextAdr =
+      currentAdrIndex >= 0 && currentAdrIndex < allProjectAdrs.length - 1
+        ? allProjectAdrs[currentAdrIndex + 1]
+        : null;
+
     return {
       adr: shaped,
       approvals: shapeWithProfiles(approvalsRow.rows ?? []),
@@ -1810,9 +1820,13 @@ export const getAdr = createServerFn({ method: "POST" })
       hasUserApproved,
       myApproval,
       myReviewDecision: myApprovalRow?.decision ?? null,
-      projectAdrs: projectAdrsRow.rows ?? [],
+      projectAdrs: allProjectAdrs,
+      prevAdr,
+      nextAdr,
+      currentIndex: currentAdrIndex >= 0 ? currentAdrIndex + 1 : null,
+      totalAdrs: allProjectAdrs.length,
     };
-  });
+}
 
 const encodedYjsUpdateSchema = z
   .string()

@@ -11,11 +11,11 @@ import { SimpleMarkdown } from "@/components/decyra/RichEditor";
 import { DEFAULT_ADR_FORM, type AdrFormData } from "@/components/decyra/AdrForm";
 import { useAdrCollaboration, type AdrCollaborationState } from "@/hooks/useAdrCollaboration";
 import { getErrorMessage } from "@/lib/utils";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import {
   ArrowLeft, Edit, Send, ThumbsUp, MessageSquare, GitCommit,
-  GitBranch, Link as LinkIcon, X, Plus, Book, ChevronDown, ChevronRight,
+  GitBranch, Link as LinkIcon, X, Plus, Book, ChevronDown, ChevronRight, ChevronLeft,
   Eye, Rocket, ExternalLink, Trash2, UserCheck, CheckCircle2, Check, AtSign,
   History, Clock, FileEdit, Sparkles, ArrowRight, Hash, Shield, XCircle
 } from "lucide-react";
@@ -93,6 +93,37 @@ function AdrDetail() {
   const [relSearching, setRelSearching] = useState(false);
 
   const adr = data?.adr;
+  const prevAdr = data?.prevAdr;
+  const nextAdr = data?.nextAdr;
+  const currentIndex = data?.currentIndex;
+  const totalAdrs = data?.totalAdrs;
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === "ArrowLeft" && prevAdr?.id) {
+        e.preventDefault();
+        navigate({ to: "/adrs/$adrId", params: { adrId: prevAdr.id } });
+      } else if (e.key === "ArrowRight" && nextAdr?.id) {
+        e.preventDefault();
+        navigate({ to: "/adrs/$adrId", params: { adrId: nextAdr.id } });
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [prevAdr?.id, nextAdr?.id, navigate]);
+
   const isAdmin = data?.isAdmin;
   const myRole = data?.myRole;
   const canPublish = isAdmin || myRole === "project_admin";
@@ -410,6 +441,35 @@ function AdrDetail() {
             </button>
             <span className="opacity-40">/</span>
             <span className="font-mono font-semibold text-foreground truncate">{adr.full_id}</span>
+
+            {/* Quick Prev / Next ADR Navigation Controls */}
+            {totalAdrs && totalAdrs > 1 ? (
+              <div className="flex items-center gap-0.5 ml-2 pl-2 border-l border-border/60">
+                <button
+                  type="button"
+                  onClick={() => prevAdr && navigate({ to: "/adrs/$adrId", params: { adrId: prevAdr.id } })}
+                  disabled={!prevAdr}
+                  title={prevAdr ? `Previous: ${prevAdr.full_id} - ${prevAdr.title} (Left Arrow)` : "No previous ADR"}
+                  className="inline-flex items-center justify-center h-6 w-6 rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground transition-colors"
+                  aria-label="Previous ADR"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+                <span className="text-[11px] font-mono font-medium text-muted-foreground/80 select-none px-1">
+                  {currentIndex ?? "?"} of {totalAdrs}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => nextAdr && navigate({ to: "/adrs/$adrId", params: { adrId: nextAdr.id } })}
+                  disabled={!nextAdr}
+                  title={nextAdr ? `Next: ${nextAdr.full_id} - ${nextAdr.title} (Right Arrow)` : "No next ADR"}
+                  className="inline-flex items-center justify-center h-6 w-6 rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground transition-colors"
+                  aria-label="Next ADR"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
@@ -892,6 +952,53 @@ function AdrDetail() {
             </div>
           </div>
         </div>
+
+        {/* Next / Previous ADR Navigation Footer */}
+        {(prevAdr || nextAdr) && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+            {prevAdr ? (
+              <button
+                type="button"
+                onClick={() => navigate({ to: "/adrs/$adrId", params: { adrId: prevAdr.id } })}
+                className="group flex flex-col items-start gap-1 p-3.5 rounded-xl border border-border bg-card/70 hover:bg-card hover:border-primary/40 hover:shadow-xs transition-all text-left"
+              >
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground group-hover:text-primary transition-colors">
+                  <ChevronLeft className="h-3.5 w-3.5 transition-transform group-hover:-translate-x-0.5" />
+                  <span>Previous ADR</span>
+                  <kbd className="hidden sm:inline-block px-1 py-0.2 rounded border border-border bg-muted/60 text-[10px] font-mono text-muted-foreground">←</kbd>
+                </span>
+                <span className="font-mono text-xs font-bold text-foreground">
+                  {prevAdr.full_id}
+                </span>
+                <span className="text-xs text-muted-foreground line-clamp-1 group-hover:text-foreground/90 transition-colors">
+                  {prevAdr.title}
+                </span>
+              </button>
+            ) : (
+              <div className="hidden sm:block" />
+            )}
+
+            {nextAdr && (
+              <button
+                type="button"
+                onClick={() => navigate({ to: "/adrs/$adrId", params: { adrId: nextAdr.id } })}
+                className="group flex flex-col items-end gap-1 p-3.5 rounded-xl border border-border bg-card/70 hover:bg-card hover:border-primary/40 hover:shadow-xs transition-all text-right sm:col-start-2"
+              >
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground group-hover:text-primary transition-colors">
+                  <kbd className="hidden sm:inline-block px-1 py-0.2 rounded border border-border bg-muted/60 text-[10px] font-mono text-muted-foreground">→</kbd>
+                  <span>Next ADR</span>
+                  <ChevronRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                </span>
+                <span className="font-mono text-xs font-bold text-foreground">
+                  {nextAdr.full_id}
+                </span>
+                <span className="text-xs text-muted-foreground line-clamp-1 group-hover:text-foreground/90 transition-colors">
+                  {nextAdr.title}
+                </span>
+              </button>
+            )}
+          </div>
+        )}
           </main>
 
           {/* Right Sidebar Column */}
