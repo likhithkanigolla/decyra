@@ -7,7 +7,7 @@ import { useAdrCollaboration } from "@/hooks/useAdrCollaboration";
 import { getErrorMessage } from "@/lib/utils";
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Shield, GitBranch } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/adrs/$adrId_/edit")({
   head: () => ({ meta: [{ title: "Edit ADR — Decyra" }] }),
@@ -110,6 +110,64 @@ function EditAdr() {
   }
 
   if (!data) return <div className="p-8 text-sm text-muted-foreground">Loading…</div>;
+
+  const isFinalized = Boolean(
+    (data?.adr?.current_version ?? 0) > 0 ||
+      data?.adr?.status === "published" ||
+      data?.adr?.status === "superseded",
+  );
+
+  if (isFinalized) {
+    return (
+      <div className="p-8 max-w-2xl mx-auto space-y-4">
+        <button
+          onClick={() => navigate({ to: "/adrs/$adrId", params: { adrId } })}
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" /> Back to ADR
+        </button>
+
+        <div className="rounded-xl border border-border bg-card p-6 shadow-2xs space-y-4">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-muted text-foreground">
+              {data.adr.full_id}
+            </span>
+            <span className="text-xs font-medium text-muted-foreground">Finalized Record</span>
+          </div>
+
+          <h2 className="text-lg font-bold text-foreground">
+            This ADR is finalized and cannot be edited
+          </h2>
+
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Architectural Decision Records serve as historical records of decisions made at a specific point in time. Altering a finalized document destroys that historical context. The standard software engineering practice is to create a new ADR that supersedes this record.
+          </p>
+
+          <div className="pt-2 flex items-center gap-3">
+            <button
+              onClick={() =>
+                navigate({
+                  to: "/projects/$projectId/adrs/new",
+                  params: { projectId: data.adr.project_id },
+                  search: { supersedes: adrId },
+                })
+              }
+              className="inline-flex items-center gap-2 h-9 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground hover:opacity-90 shadow-2xs transition-opacity"
+            >
+              <GitBranch className="h-4 w-4" />
+              Create Superseding ADR
+            </button>
+            <button
+              onClick={() => navigate({ to: "/adrs/$adrId", params: { adrId } })}
+              className="inline-flex items-center gap-2 h-9 rounded-md border border-border bg-card px-4 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+            >
+              Return to ADR
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 max-w-4xl mx-auto">

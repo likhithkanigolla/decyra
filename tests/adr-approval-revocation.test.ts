@@ -306,10 +306,7 @@ describe("ADR Approval & Revocation Services", () => {
       expect(res).toEqual({ ok: true, nextStatus: "under_review" });
     });
 
-    it("reverts published ADR to draft and revokes approvals when edited", async () => {
-      let statusSetToDraft = false;
-      let approvalsDeleted = false;
-
+    it("rejects editing a published ADR and requires supersede workflow", async () => {
       vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
         if (sql.includes("FROM adrs WHERE id = $1")) {
           return {
@@ -320,6 +317,7 @@ describe("ADR Approval & Revocation Services", () => {
             context: "Original Context",
             decision: "Original Decision",
             consequences: "Original Consequences",
+            current_version: 1,
           };
         }
         if (sql.includes("FROM user_roles")) return null;
@@ -327,24 +325,12 @@ describe("ADR Approval & Revocation Services", () => {
         return null;
       });
 
-      vi.spyOn(postgres, "query").mockImplementation(async (sql) => {
-        if (sql.includes("UPDATE adrs SET") && sql.includes("status = $")) {
-          statusSetToDraft = true;
-        }
-        if (sql.includes("DELETE FROM approvals WHERE adr_id = $1 AND decision = 'approve'")) {
-          approvalsDeleted = true;
-        }
-        return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
-      });
-
-      const res = await updateAdrService(authorUserId, {
-        id: adrId,
-        context: "New context after publish",
-      });
-
-      expect(statusSetToDraft).toBe(true);
-      expect(approvalsDeleted).toBe(true);
-      expect(res).toEqual({ ok: true, nextStatus: "draft" });
+      await expect(
+        updateAdrService(authorUserId, {
+          id: adrId,
+          context: "New context after publish",
+        }),
+      ).rejects.toThrow("Finalized ADRs cannot be edited or overwritten");
     });
 
     it("does not delete approvals when no fields are modified", async () => {

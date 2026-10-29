@@ -467,7 +467,7 @@ export const getProject = createServerFn({ method: "POST" })
           [data.id],
         ),
         pgQuery(
-          `SELECT id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at
+          `SELECT id, full_id, title, status, tags, updated_at, author_id, repository_deleted_at, current_version
            FROM adrs WHERE project_id = $1
              AND (status <> 'draft' OR author_id = $2)
            ORDER BY adr_number DESC`,
@@ -2109,12 +2109,18 @@ export async function submitFinalDecisionService(
     comment?: string;
   },
 ) {
-  const adr = await pgOne<{ status: string; author_id: string; project_id: string; full_id: string; title: string }>(
-    "SELECT status, author_id, project_id, full_id, title FROM adrs WHERE id = $1",
+  const adr = await pgOne<{ status: string; author_id: string; project_id: string; full_id: string; title: string; current_version: number }>(
+    "SELECT status, author_id, project_id, full_id, title, current_version FROM adrs WHERE id = $1",
     [data.adr_id],
   );
   if (!adr) throw new Error("ADR not found.");
   assertDraftAdrOwner(adr, userId);
+
+  if ((adr.current_version ?? 0) > 0 || adr.status === "published" || adr.status === "superseded") {
+    throw new Error(
+      "This ADR has already been finalized/published and cannot be overridden. Create a new ADR to supersede it."
+    );
+  }
 
   const isAdmin = !!(await pgOne(
     "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
@@ -2602,7 +2608,7 @@ export const dashboardStats = createServerFn({ method: "POST" })
     if (isAdmin) {
       [adrsRow, projectsRow] = await Promise.all([
         pgQuery(
-          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id, a.assigned_to,
+          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id, a.assigned_to, a.current_version,
                   p.name AS proj_name, p.code AS proj_code,
                   ass.full_name AS assigned_to_name, ass.username AS assigned_to_username
            FROM adrs a
@@ -2617,7 +2623,7 @@ export const dashboardStats = createServerFn({ method: "POST" })
     } else {
       [adrsRow, projectsRow] = await Promise.all([
         pgQuery(
-          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id, a.assigned_to,
+          `SELECT a.id, a.status, a.full_id, a.title, a.updated_at, a.project_id, a.assigned_to, a.current_version,
                   p.name AS proj_name, p.code AS proj_code,
                   ass.full_name AS assigned_to_name, ass.username AS assigned_to_username
            FROM adrs a 
@@ -2639,7 +2645,7 @@ export const dashboardStats = createServerFn({ method: "POST" })
     const [reviewRequiredRow, resolvedCommentsRow, resolvedCountRow, unreadNotificationsRow] =
       await Promise.all([
         pgQuery(
-          `SELECT a.id, a.full_id, a.title, a.status, a.updated_at, a.assigned_to,
+          `SELECT a.id, a.full_id, a.title, a.status, a.updated_at, a.assigned_to, a.current_version,
                   p.name AS proj_name, p.code AS proj_code,
                   (a.assigned_to = $1) AS is_assigned_to_me
            FROM adrs a
@@ -2976,12 +2982,19 @@ export async function updateAdrService(userId: string, data: z.infer<typeof adrF
   // Check project_member or admin
   const adr = await pgOne<any>(
     `SELECT status, project_id, author_id, title, context, decision, consequences,
-            tags, alternatives, design_changes, major_impacts, references_data
+            tags, alternatives, design_changes, major_impacts, references_data, current_version
      FROM adrs WHERE id = $1`,
     [data.id],
   );
   if (!adr) throw new Error("ADR not found");
   assertDraftAdrOwner(adr, userId);
+
+  if ((adr.current_version ?? 0) > 0 || adr.status === "published" || adr.status === "superseded") {
+    throw new Error(
+      "Finalized ADRs cannot be edited or overwritten. To change an architectural decision, create a new ADR that supersedes this record."
+    );
+  }
+
   const isAdmin = !!(await pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role='admin'", [
     userId,
   ]));
@@ -3032,7 +3045,7 @@ export async function updateAdrService(userId: string, data: z.infer<typeof adrF
   set("references_data", data.references_data, "::jsonb");
 
   let nextStatus: string | null = null;
-  if (adr.status === "published" || adr.status === "superseded" || adr.status === "rejected") {
+  if (adr.status === "rejected") {
     fields.push(`status = $${p++}`);
     vals.push("draft");
     nextStatus = "draft";
@@ -3109,7 +3122,7 @@ export const searchAdrs = createServerFn({ method: "POST" })
     const isAdmin = !!isAdminRow;
 
     let sql = `
-      SELECT a.id, a.full_id, a.title, a.status, a.tags, a.updated_at, a.project_id,
+      SELECT a.id, a.full_id, a.title, a.status, a.tags, a.updated_at, a.project_id, a.current_version,
              p.name AS proj_name, p.code AS proj_code
       FROM adrs a
       JOIN projects p ON p.id = a.project_id
@@ -3211,6 +3224,58 @@ export const addAdrRelationship = createServerFn({ method: "POST" })
        ON CONFLICT (source_adr_id, target_adr_id, rel_type) DO NOTHING`,
       [data.source_adr_id, data.target_adr_id, data.rel_type, userId],
     );
+
+    // Automatic status update for superseded ADRs
+    if (data.rel_type === "supersedes") {
+      const source = await pgOne<{ full_id: string; title: string }>(
+        "SELECT full_id, title FROM adrs WHERE id = $1",
+        [data.source_adr_id],
+      );
+      const target = await pgOne<{ status: string }>(
+        "SELECT status FROM adrs WHERE id = $1",
+        [data.target_adr_id],
+      );
+      if (target && target.status !== "superseded") {
+        await pgQuery("UPDATE adrs SET status = 'superseded' WHERE id = $1", [data.target_adr_id]);
+        await recordAdrTimelineEvent({
+          adr_id: data.target_adr_id,
+          user_id: userId,
+          event_type: "status_changed",
+          summary: `Status updated to Superseded by ${source?.full_id ?? "new ADR"} ("${source?.title ?? ""}")`,
+          changes: {
+            previous_status: target.status,
+            new_status: "superseded",
+            superseded_by_id: data.source_adr_id,
+            superseded_by_full_id: source?.full_id,
+          },
+        });
+      }
+    } else if (data.rel_type === "superseded_by") {
+      const target = await pgOne<{ full_id: string; title: string }>(
+        "SELECT full_id, title FROM adrs WHERE id = $1",
+        [data.target_adr_id],
+      );
+      const source = await pgOne<{ status: string }>(
+        "SELECT status FROM adrs WHERE id = $1",
+        [data.source_adr_id],
+      );
+      if (source && source.status !== "superseded") {
+        await pgQuery("UPDATE adrs SET status = 'superseded' WHERE id = $1", [data.source_adr_id]);
+        await recordAdrTimelineEvent({
+          adr_id: data.source_adr_id,
+          user_id: userId,
+          event_type: "status_changed",
+          summary: `Status updated to Superseded by ${target?.full_id ?? "new ADR"} ("${target?.title ?? ""}")`,
+          changes: {
+            previous_status: source.status,
+            new_status: "superseded",
+            superseded_by_id: data.target_adr_id,
+            superseded_by_full_id: target?.full_id,
+          },
+        });
+      }
+    }
+
     await Promise.all([
       publishAdrCollaborationSignal(
         context,
@@ -3236,8 +3301,8 @@ export const removeAdrRelationship = createServerFn({ method: "POST" })
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
 
-    const relationship = await pgOne<{ source_adr_id: string; target_adr_id: string }>(
-      "SELECT source_adr_id, target_adr_id FROM adr_relationships WHERE id = $1",
+    const relationship = await pgOne<{ source_adr_id: string; target_adr_id: string; rel_type: string }>(
+      "SELECT source_adr_id, target_adr_id, rel_type FROM adr_relationships WHERE id = $1",
       [data.id],
     );
     if (!relationship) return { ok: true };
@@ -3246,6 +3311,49 @@ export const removeAdrRelationship = createServerFn({ method: "POST" })
       assertAdrCollaborationAccess(context, relationship.target_adr_id),
     ]);
     await pgQuery("DELETE FROM adr_relationships WHERE id = $1", [data.id]);
+
+    const supersededAdrId =
+      relationship.rel_type === "supersedes"
+        ? relationship.target_adr_id
+        : relationship.rel_type === "superseded_by"
+          ? relationship.source_adr_id
+          : null;
+
+    if (supersededAdrId) {
+      const stillSuperseded = await pgOne(
+        `SELECT 1 FROM adr_relationships
+         WHERE (target_adr_id = $1 AND rel_type = 'supersedes')
+            OR (source_adr_id = $1 AND rel_type = 'superseded_by')
+         LIMIT 1`,
+        [supersededAdrId],
+      );
+      if (!stillSuperseded) {
+        const adrInfo = await pgOne<{ current_version: number }>(
+          "SELECT current_version FROM adrs WHERE id = $1",
+          [supersededAdrId],
+        );
+        const hasRejections = await pgOne(
+          "SELECT 1 FROM approvals WHERE adr_id = $1 AND decision = 'request_changes' LIMIT 1",
+          [supersededAdrId],
+        );
+        const restoredStatus =
+          (adrInfo?.current_version ?? 0) > 0
+            ? hasRejections
+              ? "rejected"
+              : "published"
+            : "approved";
+
+        await pgQuery("UPDATE adrs SET status = $1 WHERE id = $2", [restoredStatus, supersededAdrId]);
+        await recordAdrTimelineEvent({
+          adr_id: supersededAdrId,
+          user_id: context.userId,
+          event_type: "status_changed",
+          summary: `Status restored to ${restoredStatus} after supersede relationship was removed`,
+          changes: { previous_status: "superseded", new_status: restoredStatus },
+        });
+      }
+    }
+
     await Promise.all([
       publishAdrCollaborationSignal(
         context,
@@ -3365,6 +3473,12 @@ export async function publishAdrService(
   );
   if (!isAdmin && member?.role !== "project_admin") {
     throw new Error("Only project admins or platform admins can publish ADRs.");
+  }
+
+  if ((adr.current_version ?? 0) > 0 || adr.status === "published" || adr.status === "superseded") {
+    throw new Error(
+      "This ADR has already been published. A finalized ADR cannot be republished or overwritten. Create a new ADR to supersede it."
+    );
   }
 
   // Check if ADR was rejected by users (has request_changes decision) or status is rejected

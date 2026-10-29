@@ -520,7 +520,7 @@ function ProjectDetail() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs text-muted-foreground">{a.full_id}</span>
-                    <StatusBadge status={a.status} />
+                    <StatusBadge status={a.status} currentVersion={a.current_version} />
                     {a.repository_deleted_at && (
                       <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
                         Archived from repository

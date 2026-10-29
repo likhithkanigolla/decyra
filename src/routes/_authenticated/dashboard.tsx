@@ -176,7 +176,7 @@ function Dashboard() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs text-muted-foreground">{a.full_id}</span>
-                    <StatusBadge status={a.status} />
+                    <StatusBadge status={a.status} currentVersion={a.current_version} />
                   </div>
                   <div className="mt-0.5 truncate text-sm font-medium group-hover:text-primary transition-colors">{a.title}</div>
                 </div>

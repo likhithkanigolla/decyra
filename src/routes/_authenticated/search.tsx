@@ -147,7 +147,7 @@ function SearchPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-mono text-xs text-muted-foreground">{a.full_id}</span>
-                      <StatusBadge status={a.status} />
+                      <StatusBadge status={a.status} currentVersion={a.current_version} />
                       {(a.tags ?? []).slice(0, 3).map((t: string) => (
                         <span key={t} className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-accent-foreground">{t}</span>
                       ))}

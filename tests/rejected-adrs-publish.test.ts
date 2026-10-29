@@ -422,4 +422,56 @@ describe("Publishing Rejected ADRs", () => {
     expect(comment.id).toBe("comment-1");
     expect(referencedEventRecorded).toBe(true);
   });
+
+  it("rejects overriding a finalized ADR with an admin decision", async () => {
+    vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+      if (sql.includes("FROM adrs WHERE id = $1")) {
+        return {
+          status: "rejected",
+          author_id: regularUserId,
+          project_id: projectId,
+          full_id: "DEC-004",
+          title: "Tenant Migration",
+          current_version: 3,
+        };
+      }
+      return null;
+    });
+
+    await expect(
+      submitFinalDecisionService(adminUserId, {
+        adr_id: adrId,
+        decision: "approved",
+      }),
+    ).rejects.toThrow("This ADR has already been finalized/published and cannot be overridden");
+  });
+
+  it("rejects republishing an already published ADR", async () => {
+    vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+      if (sql.includes("FROM adrs a JOIN projects p")) {
+        return {
+          id: adrId,
+          status: "rejected",
+          author_id: regularUserId,
+          project_id: projectId,
+          full_id: "DEC-004",
+          title: "Tenant Migration",
+          current_version: 3,
+          proj_code: "DEC",
+          proj_name: "Decyra",
+        };
+      }
+      if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+        return { 1: 1 };
+      }
+      return null;
+    });
+
+    await expect(
+      publishAdrService(adminUserId, {
+        adr_id: adrId,
+        publish_as: "rejected",
+      }),
+    ).rejects.toThrow("This ADR has already been published. A finalized ADR cannot be republished or overwritten");
+  });
 });

@@ -98,6 +98,11 @@ function AdrDetail() {
   const canPublish = isAdmin || myRole === "project_admin";
   const canApprove = myRole !== "intern" && (isAdmin || myRole);
   const nextStatus = adr ? STATUS_FLOW[adr.status] : null;
+  const isFinalized = Boolean(
+    (adr?.current_version ?? 0) > 0 ||
+      adr?.status === "published" ||
+      adr?.status === "superseded",
+  );
   const myReviewDecision = data?.myReviewDecision;
   const hasUserApproved = Boolean(
     myReviewDecision === "approve" ||
@@ -416,12 +421,25 @@ function AdrDetail() {
               <GitBranch className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Graph</span>
             </Link>
-            <Link
-              to="/adrs/$adrId/edit" params={{ adrId }}
-              className="inline-flex items-center gap-1.5 h-8 rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground hover:bg-accent shadow-2xs transition-colors"
-            >
-              <Edit className="h-3.5 w-3.5" /> Edit
-            </Link>
+            {isFinalized ? (
+              <Link
+                to="/projects/$projectId/adrs/new"
+                params={{ projectId: adr.project_id }}
+                search={{ supersedes: adr.id }}
+                className="inline-flex items-center gap-1.5 h-8 rounded-md border border-primary/40 bg-primary/10 px-3 text-xs font-semibold text-primary hover:bg-primary/20 shadow-2xs transition-colors"
+                title="This decision is finalized. Create a new ADR that supersedes it."
+              >
+                <GitBranch className="h-3.5 w-3.5" /> Supersede ADR
+              </Link>
+            ) : (
+              <Link
+                to="/adrs/$adrId/edit"
+                params={{ adrId }}
+                className="inline-flex items-center gap-1.5 h-8 rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground hover:bg-accent shadow-2xs transition-colors"
+              >
+                <Edit className="h-3.5 w-3.5" /> Edit
+              </Link>
+            )}
           </div>
         </div>
 
@@ -887,8 +905,32 @@ function AdrDetail() {
                 </span>
               </div>
 
+              {/* Finalized Record: Historical decision locked in Git */}
+              {isFinalized && (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-border/80 bg-muted/30 p-3 text-xs space-y-1.5">
+                    <div className="flex items-center gap-1.5 font-semibold text-foreground">
+                      <Shield className="h-3.5 w-3.5 text-primary shrink-0" />
+                      <span>Finalized Architectural Record</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      This ADR is finalized in Git ({adr.current_version ? `v${adr.current_version}` : "published"}). To change this decision, standard software engineering practice is to create a new ADR that supersedes this record.
+                    </p>
+                  </div>
+                  <Link
+                    to="/projects/$projectId/adrs/new"
+                    params={{ projectId: adr.project_id }}
+                    search={{ supersedes: adr.id }}
+                    className="w-full h-8.5 rounded-md border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
+                  >
+                    <GitBranch className="h-3.5 w-3.5" />
+                    Create Superseding ADR
+                  </Link>
+                </div>
+              )}
+
               {/* Under Review: Unified Review Hub (4 buttons: 2 Personal, 2 Admin for admins) */}
-              {adr.status === "under_review" && (
+              {adr.status === "under_review" && !isFinalized && (
                 <div className="space-y-3.5">
                   {/* Approval Progress */}
                   <div className="rounded-lg bg-muted/40 p-3 border border-border/50">
@@ -1048,7 +1090,7 @@ function AdrDetail() {
               )}
 
               {/* Approved Status Actions */}
-              {adr.status === "approved" && (
+              {adr.status === "approved" && !isFinalized && (
                 canPublish ? (
                   <button
                     onClick={() => handlePublish("published")}
@@ -1072,7 +1114,7 @@ function AdrDetail() {
               )}
 
               {/* Rejected Status Actions */}
-              {adr.status === "rejected" && (
+              {adr.status === "rejected" && !isFinalized && (
                 canPublish ? (
                   <button
                     onClick={() => handlePublish("rejected")}

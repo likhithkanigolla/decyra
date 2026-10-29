@@ -32,7 +32,10 @@ export function StatusBadge({
   let label = LABELS[status] ?? status;
   let style = STATUS_STYLES[status] ?? "bg-muted text-muted-foreground";
 
-  if (isPublished) {
+  if (status === "superseded") {
+    label = "Published | Superseded";
+    style = "bg-warning/15 text-warning border border-warning/30";
+  } else if (isPublished) {
     if (status === "rejected") {
       label = "Published | Rejected";
       style = "bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30";

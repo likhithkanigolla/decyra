@@ -1,26 +1,52 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { createAdr, findSimilarAdrs } from "@/lib/api/decyra.functions";
+import { createAdr, findSimilarAdrs, getAdr, addAdrRelationship } from "@/lib/api/decyra.functions";
 import { AdrForm, DEFAULT_ADR_FORM, type AdrFormData } from "@/components/decyra/AdrForm";
 import { getErrorMessage } from "@/lib/utils";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, AlertTriangle } from "lucide-react";
+import { ArrowLeft, AlertTriangle, GitBranch } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId_/adrs/new")({
+  validateSearch: (search: Record<string, unknown>): { supersedes?: string } => ({
+    supersedes: typeof search.supersedes === "string" ? search.supersedes : undefined,
+  }),
   head: () => ({ meta: [{ title: "New ADR — Decyra" }] }),
   component: NewAdr,
 });
 
 function NewAdr() {
   const { projectId } = Route.useParams();
+  const { supersedes } = Route.useSearch();
   const navigate = useNavigate();
   const createAdrFn = useServerFn(createAdr);
   const similarFn = useServerFn(findSimilarAdrs);
+  const getAdrFn = useServerFn(getAdr);
+  const addRelFn = useServerFn(addAdrRelationship);
 
   const [form, setForm] = useState<AdrFormData>(DEFAULT_ADR_FORM);
   const [busy, setBusy] = useState(false);
   const [similarAdrs, setSimilarAdrs] = useState<any[]>([]);
+  const [supersededAdr, setSupersededAdr] = useState<any>(null);
+
+  useEffect(() => {
+    if (supersedes) {
+      getAdrFn({ data: { id: supersedes } })
+        .then((res) => {
+          if (res?.adr) {
+            setSupersededAdr(res.adr);
+            setForm((prev) => ({
+              ...prev,
+              context:
+                prev.context && prev.context !== DEFAULT_ADR_FORM.context
+                  ? prev.context
+                  : `Supersedes ${res.adr.full_id} ("${res.adr.title}").\n\n`,
+            }));
+          }
+        })
+        .catch(console.error);
+    }
+  }, [supersedes, getAdrFn]);
 
   useEffect(() => {
     if (form.title.trim().length < 3 && form.context.trim().length < 5) {
@@ -56,9 +82,23 @@ function NewAdr() {
           references_data: form.references_data,
         },
       });
-      toast.success("ADR created as draft");
-      // Navigate to the new ADR
       const adrId = (adr as any)?.id ?? (adr as any)?.adr?.id;
+
+      if (adrId && supersedes) {
+        try {
+          await addRelFn({
+            data: {
+              source_adr_id: adrId,
+              target_adr_id: supersedes,
+              rel_type: "supersedes",
+            },
+          });
+        } catch (e) {
+          console.error("Failed to link supersedes relationship:", e);
+        }
+      }
+
+      toast.success(supersedes ? "Superseding ADR created" : "ADR created as draft");
       if (adrId) {
         navigate({ to: "/adrs/$adrId", params: { adrId } });
       } else {
@@ -80,10 +120,28 @@ function NewAdr() {
         <ArrowLeft className="h-4 w-4" /> Back to project
       </button>
 
-      <h1 className="text-2xl font-semibold tracking-tight">New Architecture Decision Record</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">
+        {supersededAdr ? `Supersede ${supersededAdr.full_id}` : "New Architecture Decision Record"}
+      </h1>
       <p className="text-sm text-muted-foreground mt-1">
-        Document an architectural decision. Fill in as much detail as you have — you can edit it later.
+        {supersededAdr
+          ? `Document a new decision that replaces ${supersededAdr.full_id} while preserving its historical record.`
+          : "Document an architectural decision. Fill in as much detail as you have — you can edit it later."}
       </p>
+
+      {supersededAdr && (
+        <div className="mt-4 rounded-lg border border-primary/40 bg-primary/10 p-3.5 text-xs flex items-start gap-2.5">
+          <GitBranch className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold text-foreground">
+              Superseding {supersededAdr.full_id}: {supersededAdr.title}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              This new decision will be linked as superseding {supersededAdr.full_id}. When created, {supersededAdr.full_id} will transition to Superseded status.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="mt-6">
         {similarAdrs.length > 0 && (
