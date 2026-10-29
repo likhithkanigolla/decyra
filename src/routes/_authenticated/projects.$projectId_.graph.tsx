@@ -49,18 +49,18 @@ const STATUS_COLORS: Record<"dark" | "light", Record<string, { border: string; b
   dark: {
     draft: { border: "#818cf8", bg: "rgba(129, 140, 248, 0.15)", text: "#a5b4fc" },
     under_review: { border: "#fbbf24", bg: "rgba(251, 191, 36, 0.15)", text: "#fde68a" },
-    approved: { border: "#34d399", bg: "rgba(52, 211, 153, 0.15)", text: "#a7f3d0" },
-    published: { border: "#60a5fa", bg: "rgba(96, 165, 250, 0.15)", text: "#bfdbfe" },
+    approved: { border: "#10b981", bg: "rgba(16, 185, 129, 0.20)", text: "#6ee7b7" },
+    published: { border: "#10b981", bg: "rgba(16, 185, 129, 0.22)", text: "#6ee7b7" },
     superseded: { border: "#9ca3af", bg: "rgba(156, 163, 175, 0.15)", text: "#d1d5db" },
-    rejected: { border: "#f43f5e", bg: "rgba(244, 63, 94, 0.15)", text: "#fda4af" },
+    rejected: { border: "#f43f5e", bg: "rgba(244, 63, 94, 0.22)", text: "#fda4af" },
   },
   light: {
     draft: { border: "#4f46e5", bg: "rgba(79, 70, 229, 0.10)", text: "#4338ca" },
     under_review: { border: "#d97706", bg: "rgba(217, 119, 6, 0.10)", text: "#b45309" },
-    approved: { border: "#059669", bg: "rgba(5, 150, 105, 0.10)", text: "#047857" },
-    published: { border: "#2563eb", bg: "rgba(37, 99, 235, 0.10)", text: "#1d4ed8" },
+    approved: { border: "#059669", bg: "rgba(5, 150, 105, 0.12)", text: "#047857" },
+    published: { border: "#059669", bg: "rgba(5, 150, 105, 0.15)", text: "#047857" },
     superseded: { border: "#64748b", bg: "rgba(100, 116, 139, 0.10)", text: "#475569" },
-    rejected: { border: "#e11d48", bg: "rgba(225, 29, 72, 0.10)", text: "#be123c" },
+    rejected: { border: "#e11d48", bg: "rgba(225, 29, 72, 0.14)", text: "#be123c" },
   },
 };
 
@@ -113,15 +113,47 @@ export const REL_DEFINITIONS: Record<
   },
 };
 
-// Custom ADR Node with high-contrast light & dark styling and 4 connection handles
+// Custom ADR Node with high-contrast light & dark styling, solid/dashed published distinction, and 4 connection handles
 function AdrNode({ data }: { data: any }) {
   const navigate = useNavigate();
   const theme: "dark" | "light" = data.theme ?? "dark";
   const colors = STATUS_COLORS[theme][data.status] ?? STATUS_COLORS[theme].draft;
 
+  const isPublished = Boolean(
+    (data.currentVersion ?? 0) > 0 ||
+    data.status === "published" ||
+    data.repositoryPath,
+  );
+
+  let statusLabel = data.status?.replace("_", " ");
+  if (isPublished) {
+    if (data.status === "rejected") {
+      statusLabel = "Published | Rejected";
+    } else if (data.status === "superseded") {
+      statusLabel = "Published | Superseded";
+    } else {
+      statusLabel = "Published | Approved";
+    }
+  } else {
+    if (data.status === "approved") {
+      statusLabel = "Approved (Unpub)";
+    } else if (data.status === "rejected") {
+      statusLabel = "Rejected (Unpub)";
+    }
+  }
+
+  const borderClass = isPublished ? "border-solid border-2 shadow-md ring-1 ring-border/20" : "border-dashed border-2 opacity-95";
+  const bgTint = isPublished
+    ? data.status === "rejected"
+      ? "bg-rose-500/10 dark:bg-rose-950/25"
+      : data.status === "superseded"
+      ? "bg-slate-500/10 dark:bg-slate-900/25"
+      : "bg-emerald-500/10 dark:bg-emerald-950/25"
+    : "bg-card";
+
   return (
     <div
-      className="relative group bg-card border-2 rounded-xl px-3 py-2.5 shadow-sm hover:shadow-md transition-all min-w-[170px] max-w-[210px]"
+      className={`relative group ${bgTint} ${borderClass} rounded-xl px-3 py-2.5 transition-all min-w-[185px] max-w-[225px]`}
       style={{ borderColor: colors.border }}
     >
       {/* 4 Handles for dragging and receiving connections */}
@@ -150,17 +182,32 @@ function AdrNode({ data }: { data: any }) {
         className="!w-2.5 !h-2.5 !bg-primary !border-2 !border-background hover:scale-150 transition-transform"
       />
 
-      {/* Header with full ID and direct link */}
+      {/* Header with full ID and live version badge */}
       <div className="flex items-center justify-between gap-1.5 mb-1">
-        <span className="text-[10px] font-mono font-bold" style={{ color: colors.text }}>
-          {data.fullId}
-        </span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[10px] font-mono font-bold truncate" style={{ color: colors.text }}>
+            {data.fullId}
+          </span>
+          {isPublished ? (
+            <span
+              className="text-[9px] font-bold px-1.5 py-0.2 rounded-full inline-flex items-center gap-1 shrink-0"
+              style={{ background: colors.bg, color: colors.text }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-current inline-block" />
+              v{data.currentVersion || 1}
+            </span>
+          ) : (
+            <span className="text-[8.5px] font-medium text-muted-foreground/80 px-1 rounded border border-border/60 shrink-0">
+              unpub
+            </span>
+          )}
+        </div>
         <button
           onClick={(e) => {
             e.stopPropagation();
             navigate({ to: "/adrs/$adrId", params: { adrId: data.adrId } });
           }}
-          className="text-muted-foreground hover:text-foreground opacity-60 hover:opacity-100 p-0.5 rounded transition-opacity"
+          className="text-muted-foreground hover:text-foreground opacity-60 hover:opacity-100 p-0.5 rounded transition-opacity shrink-0"
           title="Open ADR page"
         >
           <ExternalLink className="h-3 w-3" />
@@ -175,10 +222,10 @@ function AdrNode({ data }: { data: any }) {
       {/* Status Badge */}
       <div className="flex items-center justify-between pt-1 border-t border-border/40 text-[9px]">
         <span
-          className="inline-flex items-center rounded-full px-1.5 py-0.5 font-bold uppercase tracking-wider"
+          className="inline-flex items-center rounded-full px-1.5 py-0.5 font-bold uppercase tracking-wider text-[8.5px]"
           style={{ background: colors.bg, color: colors.text }}
         >
-          {data.status?.replace("_", " ")}
+          {statusLabel}
         </span>
         <span className="text-muted-foreground/70">Drag dot</span>
       </div>
@@ -262,6 +309,8 @@ function GraphPage() {
           label: adr.title,
           fullId: adr.full_id,
           status: adr.status,
+          currentVersion: adr.current_version,
+          repositoryPath: adr.repository_path,
           adrId: adr.id,
           theme,
         },
@@ -542,12 +591,22 @@ function GraphPage() {
       <div className="px-4 py-1.5 border-b border-border/60 bg-muted/30 flex items-center justify-between text-[11px] gap-3 overflow-x-auto shrink-0">
         <div className="flex items-center gap-3 shrink-0">
           <span className="font-semibold text-muted-foreground uppercase text-[10px] tracking-wider">Statuses:</span>
-          {Object.entries(STATUS_COLORS[theme]).map(([s, c]) => (
-            <span key={s} className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full inline-block" style={{ background: c.border }} />
-              <span className="capitalize text-[11px]">{s.replace("_", " ")}</span>
-            </span>
-          ))}
+          <span className="flex items-center gap-1.5 text-[11px]">
+            <span className="w-2.5 h-2.5 rounded border-2 border-emerald-500 bg-emerald-500/20 inline-block" />
+            <span className="font-semibold text-emerald-600 dark:text-emerald-400">Published | Approved (Solid)</span>
+          </span>
+          <span className="flex items-center gap-1.5 text-[11px]">
+            <span className="w-2.5 h-2.5 rounded border-2 border-rose-500 bg-rose-500/20 inline-block" />
+            <span className="font-semibold text-rose-600 dark:text-rose-400">Published | Rejected (Solid)</span>
+          </span>
+          <span className="flex items-center gap-1.5 text-[11px]">
+            <span className="w-2.5 h-2.5 rounded border-2 border-dashed border-amber-500 bg-amber-500/10 inline-block" />
+            <span className="text-muted-foreground">Under Review (Dashed)</span>
+          </span>
+          <span className="flex items-center gap-1.5 text-[11px]">
+            <span className="w-2.5 h-2.5 rounded border-2 border-dashed border-indigo-500 bg-indigo-500/10 inline-block" />
+            <span className="text-muted-foreground">Draft (Dashed)</span>
+          </span>
         </div>
 
         <div className="flex items-center gap-3 shrink-0">

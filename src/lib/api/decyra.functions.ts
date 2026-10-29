@@ -1676,7 +1676,7 @@ export const getAdr = createServerFn({ method: "POST" })
       },
     };
 
-    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow, membersRow, timelineRow] = await Promise.all([
+    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow, membersRow, timelineRow, projectAdrsRow] = await Promise.all([
       pgQuery(
         `SELECT ap.*, pr.full_name, pr.email, pr.username
          FROM approvals ap LEFT JOIN profiles pr ON pr.id = ap.user_id
@@ -1716,6 +1716,12 @@ export const getAdr = createServerFn({ method: "POST" })
          FROM adr_timeline_events te LEFT JOIN profiles pr ON pr.id = te.user_id
          WHERE te.adr_id = $1 ORDER BY te.created_at DESC`,
         [data.id],
+      ),
+      pgQuery<{ id: string; full_id: string; title: string; status: string }>(
+        `SELECT a.id, a.full_id, a.title, a.status
+         FROM adrs a WHERE a.project_id = $1 AND a.id != $2
+         ORDER BY a.full_id ASC`,
+        [adr.proj_id, data.id],
       ),
     ]);
 
@@ -1803,6 +1809,8 @@ export const getAdr = createServerFn({ method: "POST" })
       currentUserId: userId,
       hasUserApproved,
       myApproval,
+      myReviewDecision: myApprovalRow?.decision ?? null,
+      projectAdrs: projectAdrsRow.rows ?? [],
     };
   });
 
@@ -2058,26 +2066,125 @@ export async function revokeAdrApprovalService(userId: string, adrId: string) {
     throw new Error("Cannot revoke approval for a published ADR.");
   }
 
+  const existing = await pgOne<{ decision: string; note: string | null }>(
+    "SELECT decision, note FROM approvals WHERE adr_id = $1 AND user_id = $2",
+    [adrId, userId],
+  );
+
   await pgQuery("DELETE FROM approvals WHERE adr_id = $1 AND user_id = $2", [adrId, userId]);
 
   let statusReverted = false;
-  if (adr.status === "approved") {
+  if (adr.status === "approved" && (!existing || existing.decision !== "request_changes")) {
     await pgQuery("UPDATE adrs SET status = 'under_review' WHERE id = $1", [adrId]);
     statusReverted = true;
   }
+
+  const nowIso = new Date().toISOString();
+  const timeFormatted = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const decisionWord = existing?.decision === "request_changes" ? "rejection / changes request" : "approval";
+  const summary = statusReverted
+    ? `Withdrew ${decisionWord} at ${timeFormatted} (status reverted to Under Review)`
+    : `Withdrew ${decisionWord} at ${timeFormatted}`;
 
   await recordAdrTimelineEvent({
     adr_id: adrId,
     user_id: userId,
     event_type: "approval_revoked",
-    summary: statusReverted
-      ? "Revoked approval (ADR status reverted to Under Review)"
-      : "Revoked approval",
-    changes: { status_reverted: statusReverted },
+    summary,
+    changes: {
+      withdrawn_decision: existing?.decision ?? "review",
+      status_reverted: statusReverted,
+      withdrawn_at: nowIso,
+    },
   });
 
-  return { ok: true, statusReverted };
+  return { ok: true, statusReverted, withdrawnDecision: existing?.decision };
 }
+
+export async function submitFinalDecisionService(
+  userId: string,
+  data: {
+    adr_id: string;
+    decision: "approved" | "rejected";
+    comment?: string;
+  },
+) {
+  const adr = await pgOne<{ status: string; author_id: string; project_id: string; full_id: string; title: string }>(
+    "SELECT status, author_id, project_id, full_id, title FROM adrs WHERE id = $1",
+    [data.adr_id],
+  );
+  if (!adr) throw new Error("ADR not found.");
+  assertDraftAdrOwner(adr, userId);
+
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, adr.project_id],
+  );
+  if (!isAdmin && member?.role !== "project_admin") {
+    throw new Error("Only project admins or platform admins can make final approval or rejection decisions.");
+  }
+
+  // Update ADR status directly (irrespective of team votes)
+  await pgQuery("UPDATE adrs SET status = $1 WHERE id = $2", [data.decision, data.adr_id]);
+
+  // Record admin's decision in approvals table
+  const approvalDecision = data.decision === "approved" ? "approve" : "request_changes";
+  await pgQuery(
+    `INSERT INTO approvals (adr_id, user_id, decision, note)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (adr_id, user_id) DO UPDATE
+       SET decision = EXCLUDED.decision, note = EXCLUDED.note`,
+    [data.adr_id, userId, approvalDecision, data.comment ?? null],
+  );
+
+  // If a comment was provided, post it as an official decision comment
+  if (data.comment?.trim()) {
+    const prefix = data.decision === "approved" ? "🏛️ [Admin Final Approval]" : "🏛️ [Admin Final Rejection]";
+    await pgQuery(
+      "INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)",
+      [data.adr_id, userId, `${prefix} ${data.comment.trim()}`],
+    );
+  }
+
+  // Record timeline event
+  const isApproved = data.decision === "approved";
+  const roleLabel = isAdmin ? "Platform Admin" : "Project Admin";
+  await recordAdrTimelineEvent({
+    adr_id: data.adr_id,
+    user_id: userId,
+    event_type: isApproved ? "final_approved" : "final_rejected",
+    summary: `Final ${isApproved ? "Approved" : "Rejected"} by ${roleLabel}${data.comment ? `: "${data.comment}"` : ""}`,
+    changes: {
+      final_decision: data.decision,
+      comment: data.comment ?? null,
+      previous_status: adr.status,
+    },
+  });
+
+  return { ok: true, status: data.decision };
+}
+
+export const submitFinalDecision = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        adr_id: z.string().uuid(),
+        decision: z.enum(["approved", "rejected"]),
+        comment: z.string().max(4000).optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    const result = await submitFinalDecisionService(context.userId, data);
+    await publishAdrCollaborationSignal(context, data.adr_id, "status", result.status);
+    return result;
+  });
 
 export const approveAdr = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
@@ -2165,6 +2272,29 @@ export async function addCommentService(
             ],
           );
         }
+      }
+    }
+  }
+
+  // Parse #ADR-ID references: e.g. #DEC-001, #AUTH-002
+  const adrRefMatches = data.body.match(/(?:^|\s)#([a-zA-Z0-9_-]+)/g);
+  if (adrRefMatches) {
+    const rawRefs = Array.from(
+      new Set(adrRefMatches.map((m) => m.trim().replace(/^#/, "").toUpperCase())),
+    );
+    if (rawRefs.length > 0) {
+      const referencedAdrs = await pgQuery<any>(
+        "SELECT id, full_id, title FROM adrs WHERE project_id = $1 AND UPPER(full_id) = ANY($2::text[]) AND id != $3",
+        [adr.project_id, rawRefs, data.adr_id],
+      );
+      for (const refAdr of referencedAdrs.rows ?? []) {
+        await recordAdrTimelineEvent({
+          adr_id: refAdr.id,
+          user_id: userId,
+          event_type: "referenced",
+          summary: `Referenced by ${adr.full_id} ("${adr.title}") in discussion`,
+          changes: { referenced_by_adr_id: adr.id, referenced_by_full_id: adr.full_id },
+        });
       }
     }
   }
@@ -3401,7 +3531,7 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
 export async function getProjectForGraphService(userId: string, data: { project_id: string }) {
   const [adrsRow, relsRow, projectRow] = await Promise.all([
     pgQuery(
-      `SELECT DISTINCT a.id, a.full_id, a.title, a.status
+      `SELECT DISTINCT a.id, a.full_id, a.title, a.status, a.current_version, a.repository_path
        FROM adrs a
        WHERE (a.status <> 'draft' OR a.author_id = $2)
          AND (a.project_id = $1

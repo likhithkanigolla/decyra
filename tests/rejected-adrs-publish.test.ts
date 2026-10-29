@@ -3,6 +3,8 @@ import type { QueryResult } from "pg";
 import {
   publishAdrService,
   updateAdrService,
+  submitFinalDecisionService,
+  addCommentService,
 } from "@/lib/api/decyra.functions";
 import * as postgres from "@/integrations/database/postgres";
 
@@ -266,5 +268,158 @@ describe("Publishing Rejected ADRs", () => {
     expect(res.ok).toBe(true);
     expect(res.nextStatus).toBe("draft");
     expect(updatedStatus).toBe("draft");
+  });
+
+  it("submits an admin final approved decision and records timeline and comment", async () => {
+    let updatedStatus = "";
+    let insertedComment = "";
+    let recordedEvent: any = null;
+
+    vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+      if (sql.includes("FROM adrs WHERE id = $1")) {
+        return {
+          id: adrId,
+          full_id: "DEC-010",
+          title: "Microfrontends Architecture",
+          status: "under_review",
+          author_id: regularUserId,
+          project_id: projectId,
+        };
+      }
+      if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+        return { 1: 1 };
+      }
+      return null;
+    });
+
+    vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
+      if (sql.includes("UPDATE adrs SET status = $1")) {
+        updatedStatus = params?.[0] as string;
+      }
+      if (sql.includes("INSERT INTO comments")) {
+        insertedComment = params?.[2] as string;
+      }
+      if (sql.includes("INSERT INTO adr_timeline_events")) {
+        recordedEvent = {
+          eventType: params?.[2],
+          summary: params?.[3],
+        };
+      }
+      return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
+    });
+
+    const res = await submitFinalDecisionService(adminUserId, {
+      adr_id: adrId,
+      decision: "approved",
+      comment: "Approved by Root Admin after reviewing team concerns.",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe("approved");
+    expect(updatedStatus).toBe("approved");
+    expect(insertedComment).toContain("🏛️ [Admin Final Approval] Approved by Root Admin");
+    expect(recordedEvent.eventType).toBe("final_approved");
+    expect(recordedEvent.summary).toContain("Final Approved by Platform Admin");
+  });
+
+  it("submits an admin final rejected decision and records timeline and comment", async () => {
+    let updatedStatus = "";
+    let insertedComment = "";
+
+    vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+      if (sql.includes("FROM adrs WHERE id = $1")) {
+        return {
+          id: adrId,
+          full_id: "DEC-011",
+          title: "Deprecated Framework",
+          status: "under_review",
+          author_id: regularUserId,
+          project_id: projectId,
+        };
+      }
+      if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+        return null;
+      }
+      if (sql.includes("SELECT role FROM project_members")) {
+        return { role: "project_admin" };
+      }
+      return null;
+    });
+
+    vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
+      if (sql.includes("UPDATE adrs SET status = $1")) {
+        updatedStatus = params?.[0] as string;
+      }
+      if (sql.includes("INSERT INTO comments")) {
+        insertedComment = params?.[2] as string;
+      }
+      return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
+    });
+
+    const res = await submitFinalDecisionService(projectAdminUserId, {
+      adr_id: adrId,
+      decision: "rejected",
+      comment: "Rejected by Project Admin due to performance overhead.",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe("rejected");
+    expect(updatedStatus).toBe("rejected");
+    expect(insertedComment).toContain("🏛️ [Admin Final Rejection]");
+  });
+
+  it("records timeline reference event when an ADR is referenced using # in comments", async () => {
+    const referencedAdrId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    let referencedEventRecorded = false;
+
+    vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+      if (sql.includes("FROM adrs a JOIN projects p")) {
+        return {
+          id: adrId,
+          full_id: "DEC-020",
+          title: "New Auth Service",
+          status: "under_review",
+          author_id: regularUserId,
+          project_id: projectId,
+          proj_name: "Decyra Platform",
+        };
+      }
+      if (sql.includes("SELECT role FROM project_members")) {
+        return { role: "engineer" };
+      }
+      if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+        return null;
+      }
+      if (sql.includes("INSERT INTO comments")) {
+        return {
+          id: "comment-1",
+          created_at: new Date().toISOString(),
+        };
+      }
+      if (sql.includes("FROM profiles WHERE id = $1")) {
+        return { full_name: "Alice Reviewer", username: "alice" };
+      }
+      return null;
+    });
+
+    vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
+      if (sql.includes("SELECT id, full_id, title FROM adrs WHERE project_id = $1 AND UPPER(full_id) = ANY")) {
+        return {
+          rows: [{ id: referencedAdrId, full_id: "DEC-001", title: "Original Auth Architecture" }],
+        } as unknown as QueryResult<Record<string, unknown>>;
+      }
+      if (sql.includes("INSERT INTO adr_timeline_events") && params?.[0] === referencedAdrId) {
+        referencedEventRecorded = true;
+      }
+      return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
+    });
+
+    const comment = await addCommentService(regularUserId, {
+      adr_id: adrId,
+      body: "Please see #DEC-001 for background architecture before proceeding.",
+    });
+
+    expect(comment.id).toBe("comment-1");
+    expect(referencedEventRecorded).toBe(true);
   });
 });

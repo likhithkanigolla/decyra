@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   getAdr, updateAdrStatus, approveAdr, revokeAdrApproval, addComment,
   getAdrRelationships, addAdrRelationship, removeAdrRelationship, publishAdr,
-  searchAdrs, deleteAdr, assignAdrReviewer, resolveComment
+  searchAdrs, deleteAdr, assignAdrReviewer, resolveComment, submitFinalDecision
 } from "@/lib/api/decyra.functions";
 import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { SimpleMarkdown } from "@/components/decyra/RichEditor";
@@ -17,7 +17,7 @@ import {
   ArrowLeft, Edit, Send, ThumbsUp, MessageSquare, GitCommit,
   GitBranch, Link as LinkIcon, X, Plus, Book, ChevronDown, ChevronRight,
   Eye, Rocket, ExternalLink, Trash2, UserCheck, CheckCircle2, Check, AtSign,
-  History, Clock, FileEdit, Sparkles, ArrowRight
+  History, Clock, FileEdit, Sparkles, ArrowRight, Hash, Shield, XCircle
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/adrs/$adrId")({
@@ -61,12 +61,15 @@ function AdrDetail() {
   const deleteAdrFn = useServerFn(deleteAdr);
   const assignReviewerFn = useServerFn(assignAdrReviewer);
   const resolveCommentFn = useServerFn(resolveComment);
+  const finalDecisionFn = useServerFn(submitFinalDecision);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingAdr, setDeletingAdr] = useState(false);
 
-  // @mention autocomplete state
+  // @mention and #adr autocomplete state
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [adrRefQuery, setAdrRefQuery] = useState<string | null>(null);
+  const [finalComment, setFinalComment] = useState("");
   const commentTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { data, isError, isLoading } = useQuery({
@@ -95,11 +98,16 @@ function AdrDetail() {
   const canPublish = isAdmin || myRole === "project_admin";
   const canApprove = myRole !== "intern" && (isAdmin || myRole);
   const nextStatus = adr ? STATUS_FLOW[adr.status] : null;
+  const myReviewDecision = data?.myReviewDecision;
   const hasUserApproved = Boolean(
-    data?.hasUserApproved ??
+    myReviewDecision === "approve" ||
       (data?.approvals ?? []).some(
         (a: any) => a.user_id === data?.currentUserId && a.decision === "approve",
       ),
+  );
+  const hasUserDecided = Boolean(
+    myReviewDecision ||
+      (data?.approvals ?? []).some((a: any) => a.user_id === data?.currentUserId),
   );
   const hasRejections = Boolean(
     (data?.approvals ?? []).some((a: any) => a.decision === "request_changes"),
@@ -202,18 +210,45 @@ function AdrDetail() {
     }
   }
 
+  async function handleFinalDecision(decision: "approved" | "rejected") {
+    setBusy("final_decision");
+    try {
+      await finalDecisionFn({
+        data: {
+          adr_id: adrId,
+          decision,
+          comment: finalComment.trim() || undefined,
+        },
+      });
+      toast.success(`Admin final decision applied: ${decision.toUpperCase()}`);
+      setFinalComment("");
+      qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to submit final decision"));
+    } finally {
+      setBusy("");
+    }
+  }
+
   function handleCommentChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const val = e.target.value;
     setComment(val);
 
     const cursorPos = e.target.selectionStart ?? val.length;
     const textBeforeCursor = val.slice(0, cursorPos);
-    const match = textBeforeCursor.match(/@([a-zA-Z0-9_-]*)$/);
+    const mentionMatch = textBeforeCursor.match(/@([a-zA-Z0-9_-]*)$/);
+    const adrMatch = textBeforeCursor.match(/#([a-zA-Z0-9_-]*)$/);
 
-    if (match) {
-      setMentionQuery(match[1].toLowerCase());
+    if (mentionMatch) {
+      setMentionQuery(mentionMatch[1].toLowerCase());
+      setAdrRefQuery(null);
+    } else if (adrMatch) {
+      setAdrRefQuery(adrMatch[1].toLowerCase());
+      setMentionQuery(null);
     } else {
       setMentionQuery(null);
+      setAdrRefQuery(null);
     }
   }
 
@@ -239,11 +274,41 @@ function AdrDetail() {
     }, 0);
   }
 
+  function insertAdrRef(fullId: string) {
+    if (!commentTextareaRef.current) return;
+    const textarea = commentTextareaRef.current;
+    const cursorPos = textarea.selectionStart ?? comment.length;
+    const textBeforeCursor = comment.slice(0, cursorPos);
+    const textAfterCursor = comment.slice(cursorPos);
+
+    const match = textBeforeCursor.match(/#([a-zA-Z0-9_-]*)$/);
+    if (!match) return;
+
+    const prefix = textBeforeCursor.slice(0, match.index);
+    const nextComment = `${prefix}#${fullId} ${textAfterCursor}`;
+    setComment(nextComment);
+    setAdrRefQuery(null);
+
+    setTimeout(() => {
+      textarea.focus();
+      const nextPos = (prefix + `#${fullId} `).length;
+      textarea.setSelectionRange(nextPos, nextPos);
+    }, 0);
+  }
+
   const matchingMembers = mentionQuery !== null
     ? (data?.projectMembers ?? []).filter((m: any) => {
         const u = (m.username ?? "").toLowerCase();
         const n = (m.full_name ?? "").toLowerCase();
         return u.includes(mentionQuery) || n.includes(mentionQuery);
+      })
+    : [];
+
+  const matchingAdrs = adrRefQuery !== null
+    ? (data?.projectAdrs ?? []).filter((a: any) => {
+        const id = (a.full_id ?? "").toLowerCase();
+        const title = (a.title ?? "").toLowerCase();
+        return id.includes(adrRefQuery) || title.includes(adrRefQuery);
       })
     : [];
 
@@ -254,6 +319,7 @@ function AdrDetail() {
       await commentFn({ data: { adr_id: adrId, body: comment.trim() } });
       setComment("");
       setMentionQuery(null);
+      setAdrRefQuery(null);
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
     } catch (err: any) { toast.error(getErrorMessage(err, "Failed to add comment")); }
     finally { setBusy(""); }
@@ -315,9 +381,8 @@ function AdrDetail() {
   const hasRefs = Object.values(refs).some((v: any) => Array.isArray(v) && v.length > 0);
 
   return (
-    <div className="flex min-h-screen">
-      {/* Main content */}
-      <div className="flex-1 min-w-0 p-8 max-w-4xl">
+    <div className="min-h-screen bg-background">
+      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {rels && (
           <AdrCollaborationListener
             adrId={adrId}
@@ -328,67 +393,91 @@ function AdrDetail() {
             }}
           />
         )}
-        {/* Back + edit */}
-        <div className="flex items-center justify-between mb-5">
-          <button
-            onClick={() => navigate({ to: "/projects/$projectId", params: { projectId: adr.project_id } })}
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to project
-          </button>
-          <Link
-            to="/adrs/$adrId/edit" params={{ adrId }}
-            className="inline-flex items-center gap-1.5 h-8 rounded-md border border-border bg-card px-3 text-xs hover:bg-accent"
-          >
-            <Edit className="h-3.5 w-3.5" /> Edit
-          </Link>
+        {/* Top breadcrumb navigation and action bar */}
+        <div className="flex items-center justify-between gap-4 mb-5 pb-3 border-b border-border/60">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
+            <button
+              onClick={() => navigate({ to: "/projects/$projectId", params: { projectId: adr.project_id } })}
+              className="inline-flex items-center gap-1.5 hover:text-foreground font-medium transition-colors"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              <span>{adr.projects?.name ?? "Project"}</span>
+            </button>
+            <span className="opacity-40">/</span>
+            <span className="font-mono font-semibold text-foreground truncate">{adr.full_id}</span>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/projects/$projectId/graph" params={{ projectId: adr.project_id }}
+              className="inline-flex items-center gap-1.5 h-8 rounded-md border border-border bg-card px-3 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors shadow-2xs"
+              title="Open Architecture Graph"
+            >
+              <GitBranch className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Graph</span>
+            </Link>
+            <Link
+              to="/adrs/$adrId/edit" params={{ adrId }}
+              className="inline-flex items-center gap-1.5 h-8 rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground hover:bg-accent shadow-2xs transition-colors"
+            >
+              <Edit className="h-3.5 w-3.5" /> Edit
+            </Link>
+          </div>
         </div>
 
-        {/* ADR Header */}
-        <div className="rounded-xl border border-border bg-card p-6 mb-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="font-mono text-sm font-bold text-primary">{adr.full_id}</span>
-                <StatusBadge status={adr.status} />
+        {/* 2-Column Responsive Layout: 8 columns main content, 4 columns sidebar */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Main content column */}
+          <main className="lg:col-span-8 space-y-4 min-w-0">
+            {/* ADR Header Card */}
+            <div className="rounded-xl border border-border bg-card p-6 shadow-2xs">
+              <div className="flex items-center gap-2.5 mb-2.5 flex-wrap">
+                <span className="font-mono text-sm font-bold text-primary px-2 py-0.5 rounded-md bg-primary/10 border border-primary/20">
+                  {adr.full_id}
+                </span>
+                <StatusBadge
+                  status={adr.status}
+                  currentVersion={adr.current_version}
+                  userReviewDecision={data?.myReviewDecision}
+                />
                 {adr.repository_deleted_at && (
-                  <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground bg-muted/30">
                     Archived from repository
                   </span>
                 )}
                 {adr.current_version > 0 && (
-                  <span className="text-xs bg-accent px-1.5 py-0.5 rounded font-mono">v{adr.current_version}</span>
+                  <span className="text-xs bg-muted/60 border border-border px-2 py-0.5 rounded-full font-mono text-muted-foreground">
+                    v{adr.current_version}
+                  </span>
                 )}
               </div>
-              <h1 className="text-xl font-semibold tracking-tight">{adr.title}</h1>
-              <div className="mt-2 flex items-center flex-wrap gap-3 text-xs text-muted-foreground">
-                <span>{adr.projects?.name ?? "Unknown project"}</span>
-                <span>·</span>
-                <span>{new Date(adr.created_at).toLocaleDateString()}</span>
-                {(adr.tags ?? []).length > 0 && (
-                  <>
-                    <span>·</span>
-                    <div className="flex flex-wrap gap-1">
-                      {(adr.tags as string[]).map((t) => (
-                        <span key={t} className="rounded-full bg-primary/10 text-primary px-2 py-0.5">{t}</span>
-                      ))}
-                    </div>
-                  </>
-                )}
+
+              <h1 className="text-2xl font-bold tracking-tight text-foreground leading-snug">
+                {adr.title}
+              </h1>
+
+              <div className="mt-3.5 flex items-center flex-wrap gap-y-2 gap-x-4 text-xs text-muted-foreground pt-3 border-t border-border/40">
+                <span className="flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-muted-foreground/70" />
+                  {new Date(adr.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                </span>
                 {adr.assigned_to_profile && (
-                  <>
-                    <span>·</span>
-                    <span className="inline-flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full">
-                      <UserCheck className="h-3 w-3" />
-                      Reviewer: @{adr.assigned_to_profile.username || adr.assigned_to_profile.full_name}
-                    </span>
-                  </>
+                  <span className="inline-flex items-center gap-1.5 font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-500/20">
+                    <UserCheck className="h-3.5 w-3.5" />
+                    Reviewer: @{adr.assigned_to_profile.username || adr.assigned_to_profile.full_name}
+                  </span>
+                )}
+                {(adr.tags ?? []).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 ml-auto">
+                    {(adr.tags as string[]).map((t) => (
+                      <span key={t} className="rounded-md bg-secondary text-secondary-foreground font-medium px-2 py-0.5 text-[11px]">
+                        #{t}
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
-          </div>
-        </div>
 
         {/* Core Sections */}
         {[
@@ -644,7 +733,7 @@ function AdrDetail() {
                   className="flex items-center gap-2 p-2.5 my-2.5 rounded-lg bg-muted/40 border border-border/60 text-xs text-muted-foreground"
                 >
                   <UserCheck className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                  <span className="flex-1 font-medium">{renderCommentWithMentions(c.body)}</span>
+                  <span className="flex-1 font-medium">{renderCommentWithMentions(c.body, data?.projectAdrs)}</span>
                   <span className="text-[10px] opacity-70 shrink-0">
                     {new Date(c.created_at).toLocaleDateString()}
                   </span>
@@ -704,13 +793,13 @@ function AdrDetail() {
                       )}
                     </div>
                   </div>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{renderCommentWithMentions(c.body)}</p>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{renderCommentWithMentions(c.body, data?.projectAdrs)}</p>
                 </div>
               </div>
             );
           })}
 
-          {/* Comment input with @mention autocomplete */}
+          {/* Comment input with @mention and #adr autocomplete */}
           <div className="relative mt-3">
             {mentionQuery !== null && matchingMembers.length > 0 && (
               <div className="absolute bottom-full mb-1 left-0 w-64 max-h-48 overflow-y-auto rounded-lg border border-border bg-card shadow-xl z-20 divide-y divide-border/60 animate-in fade-in duration-150">
@@ -736,6 +825,30 @@ function AdrDetail() {
               </div>
             )}
 
+            {adrRefQuery !== null && matchingAdrs.length > 0 && (
+              <div className="absolute bottom-full mb-1 left-0 w-80 max-h-52 overflow-y-auto rounded-lg border border-border bg-card shadow-xl z-20 divide-y divide-border/60 animate-in fade-in duration-150">
+                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/30 flex items-center gap-1.5">
+                  <Hash className="h-3 w-3" /> Reference ADR
+                </div>
+                {matchingAdrs.map((a: any) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => insertAdrRef(a.full_id)}
+                    className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left hover:bg-accent transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-semibold font-mono text-primary truncate">#{a.full_id}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">{a.title}</div>
+                    </div>
+                    <span className="shrink-0 text-[9px] uppercase font-bold px-1.5 py-0.5 rounded border border-border bg-muted/50">
+                      {a.status}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="flex gap-2">
               <textarea
                 ref={commentTextareaRef}
@@ -748,7 +861,7 @@ function AdrDetail() {
                   }
                 }}
                 rows={2}
-                placeholder="Add a comment… Type @ to mention a team member (Cmd+Enter to submit)"
+                placeholder="Add a comment… Type @ to mention a person, # to reference an ADR (Cmd+Enter to submit)"
                 className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
               />
               <button
@@ -761,278 +874,367 @@ function AdrDetail() {
             </div>
           </div>
         </div>
-      </div>
+          </main>
 
-      {/* Right sidebar */}
-      <aside className="w-72 shrink-0 border-l border-border p-5 space-y-5">
-        {/* Actions */}
-        <div className="rounded-lg border border-border bg-card p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Actions</h3>
-          <div className="space-y-2">
-            {nextStatus && nextStatus !== "published" && (
-              <button
-                onClick={moveStatus}
-                disabled={busy === "status"}
-                className="w-full h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                <Send className="h-3.5 w-3.5" />
-                {nextStatus === "under_review" ? "Submit for review" : nextStatus === "approved" ? "Mark approved" : ""}
-              </button>
-            )}
-            {adr.status === "approved" && canPublish && (
-              <button
-                onClick={() => handlePublish("published")}
-                disabled={busy === "publish"}
-                className="w-full h-9 rounded-md bg-success px-3 text-sm font-medium text-success-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                <Rocket className="h-3.5 w-3.5" />
-                {busy === "publish" ? "Publishing…" : "Publish ADR"}
-              </button>
-            )}
+          {/* Right Sidebar Column */}
+          <aside className="lg:col-span-4 space-y-4 lg:sticky lg:top-6">
+            {/* Actions & Review Card */}
+            <div className="rounded-xl border border-border bg-card p-4.5 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between pb-2 border-b border-border/60">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Decision & Review</h3>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-muted font-semibold capitalize">
+                  {adr.status.replace("_", " ")}
+                </span>
+              </div>
 
-            {/* Publish Rejected ADR: allows publishing ADRs rejected by users to Git for architectural record */}
-            {(adr.status === "rejected" || ((adr.status === "under_review" || adr.status === "draft") && hasRejections)) && canPublish && (
-              <button
-                onClick={() => handlePublish("rejected")}
-                disabled={busy === "publish"}
-                className="w-full h-9 rounded-md bg-rose-600 px-3 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
-                title="Publish rejected decision to Git repository for architectural traceability"
-              >
-                <Rocket className="h-3.5 w-3.5" />
-                {busy === "publish" ? "Publishing…" : "Publish Rejected ADR"}
-              </button>
-            )}
-
-            {/* Mark as Rejected (for project admin/admins to close review as declined) */}
-            {adr.status !== "rejected" && adr.status !== "published" && adr.status !== "superseded" && canPublish && (
-              <button
-                onClick={handleMarkRejected}
-                disabled={busy === "status"}
-                className="w-full h-8 rounded-md border border-rose-500/30 bg-rose-500/5 px-3 text-xs font-medium text-rose-600 hover:bg-rose-500/10 dark:text-rose-400 disabled:opacity-50 flex items-center justify-center gap-1.5"
-              >
-                <X className="h-3.5 w-3.5" />
-                Mark as Rejected
-              </button>
-            )}
-
-            {/* Approve/Reject / Revoke (under review) */}
-            {adr.status === "under_review" && canApprove && (
-              <div className="space-y-2">
-                {hasUserApproved ? (
-                  <div className="space-y-2 rounded-lg border border-success/30 bg-success/5 p-3">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-success flex items-center gap-1.5">
-                        <ThumbsUp className="h-3.5 w-3.5 text-success" />
-                        You approved this ADR
+              {/* Under Review: Unified Review Hub (4 buttons: 2 Personal, 2 Admin for admins) */}
+              {adr.status === "under_review" && (
+                <div className="space-y-3.5">
+                  {/* Approval Progress */}
+                  <div className="rounded-lg bg-muted/40 p-3 border border-border/50">
+                    <div className="flex items-center justify-between text-xs mb-1.5">
+                      <span className="text-muted-foreground font-medium">Team Approvals</span>
+                      <span className="font-semibold text-foreground">
+                        {(data.approvals ?? []).filter((a: any) => a.decision === "approve").length} / {adr.projects?.required_approvals ?? 3}
                       </span>
                     </div>
-                    <button
-                      onClick={handleRevokeApproval}
-                      disabled={busy === "revoke"}
-                      className="w-full h-8 rounded-md border border-destructive/40 bg-card px-2 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50 flex items-center justify-center gap-1.5"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                      {busy === "revoke" ? "Revoking…" : "Revoke Approval"}
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <textarea
-                      value={approvalNote}
-                      onChange={(e) => setApprovalNote(e.target.value)}
-                      rows={2}
-                      placeholder="Optional review note…"
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs resize-none"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => submitApproval("approve")}
-                        disabled={busy === "approve"}
-                        className="h-8 rounded-md bg-success px-2 text-xs font-medium text-success-foreground hover:opacity-90 disabled:opacity-50"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => submitApproval("request_changes")}
-                        disabled={busy === "approve"}
-                        className="h-8 rounded-md bg-destructive px-2 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50"
-                      >
-                        Reject
-                      </button>
+                    <div className="h-1.5 rounded-full bg-border overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            (((data.approvals ?? []).filter((a: any) => a.decision === "approve").length) /
+                              (adr.projects?.required_approvals ?? 3)) *
+                              100,
+                          )}%`,
+                        }}
+                      />
                     </div>
-                  </>
+                  </div>
+
+                  {/* 1. Personal Decision (For Reviewers & Engineers) */}
+                  {canApprove && (
+                    <div className="space-y-2 rounded-lg border border-border/70 bg-card p-3 shadow-2xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-foreground tracking-wide">
+                          Personal Decision
+                        </span>
+                        {hasUserDecided && (
+                          <span className="text-[10px] font-medium text-muted-foreground lowercase">
+                            (submitted)
+                          </span>
+                        )}
+                      </div>
+
+                      {hasUserDecided ? (
+                        <div className="space-y-2 pt-1">
+                          <div className="text-xs">
+                            {myReviewDecision === "request_changes" ? (
+                              <span className="font-medium text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+                                <ThumbsUp className="h-3.5 w-3.5 rotate-180" />
+                                You requested changes
+                              </span>
+                            ) : (
+                              <span className="font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                                <ThumbsUp className="h-3.5 w-3.5" />
+                                You approved this ADR
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            onClick={handleRevokeApproval}
+                            disabled={busy === "revoke"}
+                            className="w-full h-8 rounded-md border border-destructive/30 bg-card px-2 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50 flex items-center justify-center gap-1.5 transition-colors"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                            {busy === "revoke" ? "Withdrawing…" : "Withdraw Decision"}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="space-y-2 pt-1">
+                          <textarea
+                            value={approvalNote}
+                            onChange={(e) => setApprovalNote(e.target.value)}
+                            rows={2}
+                            placeholder="Optional review note…"
+                            className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              onClick={() => submitApproval("approve")}
+                              disabled={busy === "approve"}
+                              className="h-8.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors"
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => submitApproval("request_changes")}
+                              disabled={busy === "approve"}
+                              className="h-8.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 2. Admin Decision (Only Visible to Project Admins & Platform Admins) */}
+                  {canPublish && (
+                    <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                      <div className="flex items-center gap-1.5">
+                        <Shield className="h-3.5 w-3.5 text-primary shrink-0" />
+                        <span className="text-[11px] font-semibold text-foreground tracking-wide">
+                          Admin Decision
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground leading-snug">
+                        Authoritative project decision irrespective of team votes.
+                      </div>
+                      <textarea
+                        value={finalComment}
+                        onChange={(e) => setFinalComment(e.target.value)}
+                        rows={2}
+                        placeholder="Official administrative rationale…"
+                        className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => handleFinalDecision("approved")}
+                          disabled={busy === "final_decision"}
+                          className="h-8.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Final Approve
+                        </button>
+                        <button
+                          onClick={() => handleFinalDecision("rejected")}
+                          disabled={busy === "final_decision"}
+                          className="h-8.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                          Final Reject
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Draft Status Actions */}
+              {adr.status === "draft" && (
+                <div className="space-y-2.5">
+                  <button
+                    onClick={moveStatus}
+                    disabled={busy === "status"}
+                    className="w-full h-9 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-2xs transition-opacity"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    Submit for review
+                  </button>
+                  {canPublish && (
+                    <button
+                      onClick={() => setShowDeleteConfirm(true)}
+                      className="w-full h-8 rounded-md border border-destructive/30 bg-card px-3 text-xs font-medium text-destructive hover:bg-destructive/10 flex items-center justify-center gap-1.5 transition-colors"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> Delete draft
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Approved Status Actions */}
+              {adr.status === "approved" && (
+                canPublish ? (
+                  <button
+                    onClick={() => handlePublish("published")}
+                    disabled={busy === "publish"}
+                    className="w-full h-9 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-2 shadow-2xs transition-colors"
+                  >
+                    <Rocket className="h-3.5 w-3.5" />
+                    {busy === "publish" ? "Publishing…" : "Publish ADR to Git"}
+                  </button>
+                ) : (
+                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs">
+                    <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400">
+                      <CheckCircle2 className="h-4 w-4 shrink-0" />
+                      Approved by project team
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground leading-normal">
+                      Awaiting publication to repository by an Admin.
+                    </p>
+                  </div>
+                )
+              )}
+
+              {/* Rejected Status Actions */}
+              {adr.status === "rejected" && (
+                canPublish ? (
+                  <button
+                    onClick={() => handlePublish("rejected")}
+                    disabled={busy === "publish"}
+                    className="w-full h-9 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-2 shadow-2xs transition-colors"
+                  >
+                    <Rocket className="h-3.5 w-3.5" />
+                    {busy === "publish" ? "Publishing…" : "Publish Rejected ADR"}
+                  </button>
+                ) : (
+                  <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3 text-xs">
+                    <div className="flex items-center gap-2 font-semibold text-rose-600 dark:text-rose-400">
+                      <XCircle className="h-4 w-4 shrink-0" />
+                      Rejected by project team
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground leading-normal">
+                      Awaiting archival publication by an Admin.
+                    </p>
+                  </div>
+                )
+              )}
+
+              {/* Approved By List */}
+              {(data.approvals ?? []).filter((a: any) => a.decision === "approve").length > 0 && (
+                <div className="pt-3 border-t border-border/50">
+                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Approved By</h4>
+                  <div className="space-y-1.5">
+                    {(data.approvals ?? []).filter((a: any) => a.decision === "approve").map((a: any) => (
+                      <div key={a.id} className="flex items-center gap-2 text-xs">
+                        <div className="h-5 w-5 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0">
+                          <ThumbsUp className="h-2.5 w-2.5 text-emerald-600 dark:text-emerald-400" />
+                        </div>
+                        <span className="truncate font-medium">
+                          {a.profiles?.full_name ?? "User"}
+                          {a.user_id === data?.currentUserId ? " (you)" : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Changes Requested By List */}
+              {(data.approvals ?? []).filter((a: any) => a.decision === "request_changes").length > 0 && (
+                <div className="pt-3 border-t border-border/50">
+                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Changes Requested By</h4>
+                  <div className="space-y-1.5">
+                    {(data.approvals ?? []).filter((a: any) => a.decision === "request_changes").map((a: any) => (
+                      <div key={a.id} className="flex items-center gap-2 text-xs">
+                        <div className="h-5 w-5 rounded-full bg-rose-500/10 flex items-center justify-center shrink-0">
+                          <ThumbsUp className="h-2.5 w-2.5 text-rose-600 dark:text-rose-400 rotate-180" />
+                        </div>
+                        <span className="truncate font-medium">
+                          {a.profiles?.full_name ?? "User"}
+                          {a.user_id === data?.currentUserId ? " (you)" : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Reviewer Assignment Card */}
+            <div className="rounded-xl border border-border bg-card p-4.5 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-border/60">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Assigned Reviewer</h3>
+                <UserCheck className="h-3.5 w-3.5 text-amber-500" />
+              </div>
+
+              {adr.assigned_to_profile ? (
+                <div className="flex items-center gap-2.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                  <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-amber-500/20 text-xs font-bold text-amber-600 dark:text-amber-400">
+                    {(adr.assigned_to_profile.full_name || adr.assigned_to_profile.username || "?").slice(0, 1).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-foreground truncate">{adr.assigned_to_profile.full_name}</div>
+                    <div className="text-[10px] text-muted-foreground truncate">@{adr.assigned_to_profile.username}</div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground italic">No reviewer assigned yet.</p>
+              )}
+
+              <select
+                value={adr.assigned_to ?? ""}
+                onChange={(e) => handleAssignReviewer(e.target.value ? e.target.value : null)}
+                disabled={busy === "assign"}
+                className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+              >
+                <option value="">{adr.assigned_to ? "Change or unassign reviewer…" : "Assign a reviewer…"}</option>
+                {(data.projectMembers ?? []).map((m: any) => (
+                  <option key={m.user_id} value={m.user_id}>
+                    {m.full_name ? `${m.full_name} (@${m.username || 'user'})` : m.username || m.email}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Relationships Card */}
+            <div className="rounded-xl border border-border bg-card p-4.5 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-border/60">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Relationships</h3>
+                <LinkIcon className="h-3.5 w-3.5 text-muted-foreground" />
+              </div>
+
+              {(rels ?? []).length > 0 ? (
+                <div className="space-y-1.5">
+                  {(rels as any[]).map((r) => {
+                    const isSource = r.source_adr_id === adrId;
+                    const otherId = isSource ? r.target_adr_id : r.source_adr_id;
+                    const otherFullId = isSource ? (r.target_full_id || r.target?.full_id) : (r.source_full_id || r.source?.full_id);
+                    const otherTitle = isSource ? (r.target_title || r.target?.title) : (r.source_title || r.source?.title);
+                    return (
+                      <div key={r.id} className="flex items-center justify-between gap-2 text-xs p-2 rounded-lg bg-muted/40 border border-border/50 hover:bg-muted/70 transition-colors">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">{REL_TYPE_LABELS[r.rel_type]}</div>
+                          <Link to="/adrs/$adrId" params={{ adrId: otherId }}
+                            className="truncate text-primary font-medium hover:underline block" title={otherTitle}>{otherFullId}: {otherTitle}</Link>
+                        </div>
+                        <button onClick={() => removeRel(r.id)} className="text-muted-foreground hover:text-destructive p-1 rounded shrink-0" title="Remove relationship">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground italic">No ADR relationships linked.</p>
+              )}
+
+              {/* Add relationship form */}
+              <div className="pt-2 border-t border-border/40 space-y-2">
+                <select value={relType} onChange={(e) => setRelType(e.target.value)}
+                  className="w-full h-8 rounded-md border border-input bg-background px-2.5 text-xs text-foreground cursor-pointer">
+                  {Object.entries(REL_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+                <input
+                  value={relSearch}
+                  onChange={(e) => searchRels(e.target.value)}
+                  placeholder="Search ADR to link…"
+                  className="w-full h-8 rounded-md border border-input bg-background px-2.5 text-xs"
+                />
+                {relResults.length > 0 && (
+                  <div className="rounded-lg border border-border bg-card shadow-lg divide-y divide-border/60 max-h-40 overflow-y-auto">
+                    {relResults.map((r: any) => (
+                      <button key={r.id} onClick={() => addRel(r.id)}
+                        className="w-full text-left px-3 py-2 text-xs hover:bg-accent flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <span className="font-mono font-bold text-primary mr-1.5">{r.full_id}</span>
+                          <span className="truncate text-muted-foreground">{r.title}</span>
+                        </div>
+                        <Plus className="h-3 w-3 text-muted-foreground shrink-0" />
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-
-          {/* Delete draft ADR */}
-          {adr.status === "draft" && canPublish && (
-            <div className="mt-3 pt-3 border-t border-border">
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                className="w-full h-9 rounded-md border border-destructive/40 bg-card px-3 text-sm font-medium text-destructive hover:bg-destructive/10 flex items-center justify-center gap-2"
-              >
-                <Trash2 className="h-3.5 w-3.5" /> Delete draft
-              </button>
             </div>
-          )}
-
-          {/* Approval progress */}
-          {adr.status === "under_review" && (
-            <div className="mt-3 pt-3 border-t border-border">
-              <div className="flex items-center justify-between text-xs mb-1.5">
-                <span className="text-muted-foreground">Approvals</span>
-                <span>{(data.approvals ?? []).filter((a: any) => a.decision === "approve").length} / {adr.projects?.required_approvals ?? 3}</span>
-              </div>
-              <div className="h-1.5 rounded-full bg-border overflow-hidden">
-                <div
-                  className="h-full bg-success rounded-full transition-all"
-                  style={{ width: `${Math.min(100, ((data.approvals ?? []).filter((a: any) => a.decision === "approve").length / (adr.projects?.required_approvals ?? 3)) * 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Approved By List */}
-          {(data.approvals ?? []).filter((a: any) => a.decision === "approve").length > 0 && (
-            <div className="mt-3 pt-3 border-t border-border">
-              <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Approved By</h4>
-              <div className="space-y-1.5">
-                {(data.approvals ?? []).filter((a: any) => a.decision === "approve").map((a: any) => (
-                  <div key={a.id} className="flex items-center gap-2 text-xs">
-                    <div className="h-5 w-5 rounded-full bg-success/10 flex items-center justify-center shrink-0">
-                      <ThumbsUp className="h-2.5 w-2.5 text-success" />
-                    </div>
-                    <span className="truncate font-medium">
-                      {a.profiles?.full_name ?? "User"}
-                      {a.user_id === data?.currentUserId ? " (you)" : ""}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Rejected By List */}
-          {(data.approvals ?? []).filter((a: any) => a.decision === "request_changes").length > 0 && (
-            <div className="mt-3 pt-3 border-t border-border">
-              <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Changes Requested By</h4>
-              <div className="space-y-1.5">
-                {(data.approvals ?? []).filter((a: any) => a.decision === "request_changes").map((a: any) => (
-                  <div key={a.id} className="flex items-center gap-2 text-xs">
-                    <div className="h-5 w-5 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
-                      <ThumbsUp className="h-2.5 w-2.5 text-destructive rotate-180" />
-                    </div>
-                    <span className="truncate font-medium">
-                      {a.profiles?.full_name ?? "User"}
-                      {a.user_id === data?.currentUserId ? " (you)" : ""}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          </aside>
         </div>
-
-        {/* Reviewer Assignment */}
-        <div className="rounded-lg border border-border bg-card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Assigned Reviewer</h3>
-            <UserCheck className="h-4 w-4 text-amber-500" />
-          </div>
-
-          {adr.assigned_to_profile ? (
-            <div className="flex items-center gap-2.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-3">
-              <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-amber-500/20 text-xs font-bold text-amber-600 dark:text-amber-400">
-                {(adr.assigned_to_profile.full_name || adr.assigned_to_profile.username || "?").slice(0, 1).toUpperCase()}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-semibold text-foreground truncate">{adr.assigned_to_profile.full_name}</div>
-                <div className="text-[11px] text-muted-foreground truncate">@{adr.assigned_to_profile.username}</div>
-              </div>
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground mb-3 italic">No reviewer assigned yet.</p>
-          )}
-
-          <select
-            value={adr.assigned_to ?? ""}
-            onChange={(e) => handleAssignReviewer(e.target.value ? e.target.value : null)}
-            disabled={busy === "assign"}
-            className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-          >
-            <option value="">{adr.assigned_to ? "Unassign reviewer" : "Assign a reviewer…"}</option>
-            {(data.projectMembers ?? []).map((m: any) => (
-              <option key={m.user_id} value={m.user_id}>
-                {m.full_name ? `${m.full_name} (@${m.username || 'user'})` : m.username || m.email}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Relationships */}
-        <div className="rounded-lg border border-border bg-card p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Relationships</h3>
-
-          {(rels ?? []).length > 0 && (
-            <div className="space-y-1.5 mb-3">
-              {(rels as any[]).map((r) => {
-                const isSource = r.source_adr_id === adrId;
-                const otherId = isSource ? r.target_adr_id : r.source_adr_id;
-                const otherFullId = isSource ? (r.target_full_id || r.target?.full_id) : (r.source_full_id || r.source?.full_id);
-                const otherTitle = isSource ? (r.target_title || r.target?.title) : (r.source_title || r.source?.title);
-                return (
-                  <div key={r.id} className="flex items-center gap-2 text-xs p-2 rounded-md bg-accent/50">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[10px] text-muted-foreground">{REL_TYPE_LABELS[r.rel_type]}</div>
-                      <Link to="/adrs/$adrId" params={{ adrId: otherId }}
-                        className="truncate text-primary hover:underline block">{otherFullId}</Link>
-                    </div>
-                    <button onClick={() => removeRel(r.id)} className="text-muted-foreground hover:text-destructive shrink-0">
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Add relationship */}
-          <select value={relType} onChange={(e) => setRelType(e.target.value)}
-            className="w-full h-7 rounded-md border border-input bg-background px-2 text-xs mb-2">
-            {Object.entries(REL_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <input
-            value={relSearch}
-            onChange={(e) => searchRels(e.target.value)}
-            placeholder="Search for an ADR…"
-            className="w-full h-7 rounded-md border border-input bg-background px-2 text-xs"
-          />
-          {relResults.length > 0 && (
-            <div className="mt-1 rounded-md border border-border bg-card shadow-md divide-y divide-border max-h-40 overflow-y-auto">
-              {relResults.map((r: any) => (
-                <button key={r.id} onClick={() => addRel(r.id)}
-                  className="w-full text-left px-3 py-2 text-xs hover:bg-accent flex items-center gap-2">
-                  <Plus className="h-3 w-3 text-muted-foreground shrink-0" />
-                  <span className="font-mono text-muted-foreground">{r.full_id}</span>
-                  <span className="truncate">{r.title}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Graph link */}
-        <Link
-          to="/projects/$projectId/graph" params={{ projectId: adr.project_id }}
-          className="flex items-center gap-2 rounded-lg border border-border bg-card p-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-        >
-          <GitBranch className="h-4 w-4 shrink-0" />
-          View relationship graph
-          <ChevronRight className="h-3.5 w-3.5 ml-auto" />
-        </Link>
-      </aside>
+      </div>
 
       {/* ── Delete ADR Confirmation ── */}
       {showDeleteConfirm && (
@@ -1109,8 +1311,10 @@ function AdrCollaborationListener({
 
 function Section({ title, body }: { title: string; body: string }) {
   return (
-    <div className="mb-4 rounded-xl border border-border bg-card p-5">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">{title}</h2>
+    <div className="rounded-xl border border-border bg-card p-5 sm:p-6 shadow-2xs">
+      <div className="flex items-center justify-between pb-2 mb-3 border-b border-border/50">
+        <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{title}</h2>
+      </div>
       <MarkdownProse body={body} />
     </div>
   );
@@ -1129,16 +1333,16 @@ function Collapsible({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="mb-4 rounded-xl border border-border bg-card overflow-hidden">
+    <div className="rounded-xl border border-border bg-card shadow-2xs overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-5 py-3.5 text-sm font-medium hover:bg-accent/50 transition-colors"
+        className="w-full flex items-center gap-2.5 px-5 py-3.5 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
       >
-        <span className="text-muted-foreground">{icon}</span>
-        {title}
+        <span className="text-primary">{icon}</span>
+        <span>{title}</span>
         {open ? <ChevronDown className="h-3.5 w-3.5 ml-auto text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 ml-auto text-muted-foreground" />}
       </button>
-      {open && <div className="px-5 pb-5 border-t border-border">{children}</div>}
+      {open && <div className="px-5 pb-5 pt-2 border-t border-border/50 space-y-4">{children}</div>}
     </div>
   );
 }
@@ -1215,18 +1419,50 @@ function getTimelineBadge(type: string) {
 }
 
 function MarkdownProse({ body }: { body: string }) {
-  if (!body?.trim()) return <p className="text-sm text-muted-foreground italic">Not provided</p>;
-  return <div className="text-sm leading-relaxed text-foreground prose-sm max-w-none"><SimpleMarkdown text={body} /></div>;
+  if (!body?.trim()) return <p className="text-xs text-muted-foreground italic">Not provided</p>;
+  return (
+    <div className="text-sm leading-relaxed text-foreground [&_.wmde-markdown]:bg-transparent [&_.wmde-markdown]:text-foreground [&_.wmde-markdown_h1]:text-base [&_.wmde-markdown_h1]:font-bold [&_.wmde-markdown_h1]:mt-3 [&_.wmde-markdown_h1]:mb-1.5 [&_.wmde-markdown_h2]:text-sm [&_.wmde-markdown_h2]:font-bold [&_.wmde-markdown_h2]:mt-2.5 [&_.wmde-markdown_h2]:mb-1.5 [&_.wmde-markdown_h3]:text-xs [&_.wmde-markdown_h3]:font-semibold [&_.wmde-markdown_p]:text-sm [&_.wmde-markdown_p]:leading-relaxed [&_.wmde-markdown_p]:mb-2 [&_.wmde-markdown_ul]:text-sm [&_.wmde-markdown_ol]:text-sm">
+      <SimpleMarkdown text={body} />
+    </div>
+  );
 }
 
-function renderCommentWithMentions(text: string) {
-  const parts = text.split(/(@[a-zA-Z0-9_-]+)/g);
+function renderCommentWithMentions(text: string, projectAdrs?: any[]) {
+  const parts = text.split(/(@[a-zA-Z0-9_-]+|#[a-zA-Z0-9_-]+)/g);
   return parts.map((part, i) => {
     if (part.startsWith("@")) {
       return (
         <span
           key={i}
           className="inline-flex items-center gap-0.5 rounded bg-primary/15 text-primary font-semibold px-1 py-0.5 text-xs mx-0.5"
+        >
+          {part}
+        </span>
+      );
+    }
+    if (part.startsWith("#")) {
+      const targetFullId = part.slice(1).toLowerCase();
+      const matchedAdr = projectAdrs?.find(
+        (a: any) => (a.full_id ?? "").toLowerCase() === targetFullId,
+      );
+      if (matchedAdr) {
+        return (
+          <Link
+            key={i}
+            to="/adrs/$adrId"
+            params={{ adrId: matchedAdr.id }}
+            className="inline-flex items-center gap-1 rounded bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 font-semibold px-1.5 py-0.5 text-xs mx-0.5 hover:underline"
+            title={`${matchedAdr.full_id}: ${matchedAdr.title}`}
+          >
+            <Hash className="h-3 w-3" />
+            {matchedAdr.full_id}
+          </Link>
+        );
+      }
+      return (
+        <span
+          key={i}
+          className="inline-flex items-center gap-0.5 rounded bg-muted text-foreground font-mono font-medium px-1 py-0.5 text-xs mx-0.5"
         >
           {part}
         </span>
