@@ -52,9 +52,15 @@ async function getAppliedMigrations(): Promise<Set<string>> {
 
     const migrations = await query<{ name: string }>('SELECT name FROM migrations');
     return new Set(migrations.rows.map((m) => m.name));
-  } catch (error) {
-    console.error('Error checking applied migrations:', error);
-    return new Set();
+  } catch (error: any) {
+    // If table creation raced with another process or table exists, try selecting
+    try {
+      const migrations = await query<{ name: string }>('SELECT name FROM migrations');
+      return new Set(migrations.rows.map((m) => m.name));
+    } catch {
+      console.error('Error checking applied migrations:', error);
+      return new Set();
+    }
   }
 }
 
@@ -153,6 +159,23 @@ async function executeMigration(filepath: string): Promise<void> {
     try {
       await query(statement);
     } catch (err: any) {
+      // 42710: duplicate_object (e.g. type "app_role" already exists)
+      // 42P07: duplicate_table (table already exists)
+      // 42701: duplicate_column (column already exists)
+      // 42P06: duplicate_schema (schema already exists)
+      // 23505 with pg_type: type catalog insertion race
+      const isAlreadyExists =
+        err?.code === '42710' ||
+        err?.code === '42P07' ||
+        err?.code === '42701' ||
+        err?.code === '42P06' ||
+        (err?.code === '23505' && err?.constraint === 'pg_type_typname_nsp_index');
+
+      if (isAlreadyExists) {
+        console.warn(`  ⚠️ Object already exists, continuing safely: ${err.message}`);
+        continue;
+      }
+
       console.error(`Statement failed:\n${statement.slice(0, 200)}\n`);
       throw err;
     }
@@ -177,51 +200,74 @@ export async function runMigrations(migrationsDir?: string): Promise<void> {
     return;
   }
 
-  const applied = await getAppliedMigrations();
-  const pending = migrationFiles.filter((m) => !applied.has(m.name));
-
-  if (pending.length === 0) {
-    console.log('✅ All migrations already applied');
-    return;
-  }
-
-  console.log(`⏳ Running ${pending.length} pending migration(s)...`);
-
-  for (const migration of pending) {
-    try {
-      console.log(`  📝 Applying: ${migration.name}`);
-      await executeMigration(migration.path);
-      await recordMigration(migration.name);
-      console.log(`  ✅ Applied: ${migration.name}`);
-    } catch (error) {
-      console.error(`  ❌ Failed to apply ${migration.name}:`, error);
-      throw error;
-    }
-  }
-
-  console.log('✅ All migrations completed successfully');
-
-  // Auto-seed default admin if there are no admins
+  // Obtain PostgreSQL advisory lock to ensure only one migration runner runs at a time
+  let hasLock = false;
   try {
-    const roleCheck = await query<{ count: string }>("SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'");
-    if (parseInt(roleCheck.rows[0]?.count || '0', 10) === 0) {
-      console.log('🌱 No admin found. Seeding default admin...');
-      const { createLocalUser } = await import('./local-auth.server');
-      const email = process.env.ADMIN_EMAIL || 'decyra_admin';
-      const password = process.env.ADMIN_PASSWORD || 'admin1234';
-      const fullName = process.env.ADMIN_NAME || 'Platform Admin';
-      const user = await createLocalUser(email, password, fullName, 'admin');
-      console.log(`✅ Default admin created: ${user.email} / ${password}`);
+    await query('SELECT pg_advisory_lock(7142859)');
+    hasLock = true;
+
+    const applied = await getAppliedMigrations();
+    const pending = migrationFiles.filter((m) => !applied.has(m.name));
+
+    if (pending.length === 0) {
+      console.log('✅ All migrations already applied');
+      return;
     }
-  } catch (err: any) {
-    console.error('⚠️ Failed to seed default admin:', err.message);
+
+    console.log(`⏳ Running ${pending.length} pending migration(s)...`);
+
+    for (const migration of pending) {
+      try {
+        console.log(`  📝 Applying: ${migration.name}`);
+        await executeMigration(migration.path);
+        await recordMigration(migration.name);
+        console.log(`  ✅ Applied: ${migration.name}`);
+      } catch (error) {
+        console.error(`  ❌ Failed to apply ${migration.name}:`, error);
+        throw error;
+      }
+    }
+
+    console.log('✅ All migrations completed successfully');
+
+    // Auto-seed default admin if there are no admins
+    try {
+      const roleCheck = await query<{ count: string }>("SELECT COUNT(*) FROM public.user_roles WHERE role = 'admin'");
+      if (parseInt(roleCheck.rows[0]?.count || '0', 10) === 0) {
+        console.log('🌱 No admin found. Seeding default admin...');
+        const { createLocalUser } = await import('./local-auth.server');
+        const email = process.env.ADMIN_EMAIL || 'decyra_admin';
+        const password = process.env.ADMIN_PASSWORD || 'admin1234';
+        const fullName = process.env.ADMIN_NAME || 'Platform Admin';
+        const user = await createLocalUser(email, password, fullName, 'admin');
+        console.log(`✅ Default admin created: ${user.email} / ${password}`);
+      }
+    } catch (err: any) {
+      console.error('⚠️ Failed to seed default admin:', err.message);
+    }
+  } finally {
+    if (hasLock) {
+      try {
+        await query('SELECT pg_advisory_unlock(7142859)');
+      } catch {
+        // Ignore unlock errors during process teardown
+      }
+    }
   }
 }
 
 /**
- * CLI execution
+ * CLI execution (only run when invoked directly as migrate script, not when bundled)
  */
-if (process.argv[1] === __filename) {
+const isDirectCli =
+  typeof process !== 'undefined' &&
+  Array.isArray(process.argv) &&
+  process.argv[1] &&
+  (path.basename(process.argv[1]).startsWith('migrate') ||
+   process.argv[1].endsWith('migrate.ts') ||
+   process.argv[1].endsWith('migrate.js'));
+
+if (isDirectCli) {
   const migrationsDir = process.argv[2];
 
   runMigrations(migrationsDir)
