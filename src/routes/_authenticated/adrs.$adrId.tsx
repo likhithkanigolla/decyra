@@ -31,6 +31,7 @@ const STATUS_FLOW: Record<string, string | null> = {
   approved: "published",
   published: null,
   superseded: null,
+  rejected: null,
 };
 
 const REL_TYPE_LABELS: Record<string, string> = {
@@ -100,27 +101,51 @@ function AdrDetail() {
         (a: any) => a.user_id === data?.currentUserId && a.decision === "approve",
       ),
   );
+  const hasRejections = Boolean(
+    (data?.approvals ?? []).some((a: any) => a.decision === "request_changes"),
+  );
+
+  async function handlePublish(publishAs?: "published" | "rejected") {
+    setBusy("publish");
+    try {
+      const result = await publishFn({ data: { adr_id: adrId, publish_as: publishAs } });
+      const label = result.status === "rejected" ? "Published as Rejected" : "Published";
+      toast.success(`${label} as v${result.version}${result.gitCommitHash ? ` (${result.gitCommitHash.slice(0, 7)})` : ""}`);
+      qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to publish ADR"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleMarkRejected() {
+    setBusy("status");
+    try {
+      await updateStatusFn({ data: { id: adrId, status: "rejected" } });
+      toast.success("ADR marked as Rejected");
+      qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err, "Failed to update ADR status"));
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function moveStatus() {
     if (!nextStatus || !adr) return;
     if (nextStatus === "published") {
-      // Use publishAdr instead of simple status update
-      setBusy("publish");
-      try {
-        const result = await publishFn({ data: { adr_id: adrId } });
-        toast.success(`Published as v${result.version}${result.gitCommitHash ? ` (${result.gitCommitHash.slice(0,7)})` : ""}`);
-        qc.invalidateQueries({ queryKey: ["adr", adrId] });
-        qc.invalidateQueries({ queryKey: ["dashboard"] });
-      } catch (err: any) {
-        toast.error(getErrorMessage(err, "Failed to publish ADR"));
-      } finally { setBusy(""); }
+      await handlePublish("published");
       return;
     }
     setBusy("status");
     try {
-      await updateStatusFn({ data: { id: adrId, status: nextStatus } });
+      await updateStatusFn({ data: { id: adrId, status: nextStatus as any } });
       toast.success(`Moved to ${nextStatus.replace("_", " ")}`);
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
     } catch (err: any) { toast.error(getErrorMessage(err, "Failed to update ADR status")); }
     finally { setBusy(""); }
   }
@@ -756,12 +781,37 @@ function AdrDetail() {
             )}
             {adr.status === "approved" && canPublish && (
               <button
-                onClick={moveStatus}
+                onClick={() => handlePublish("published")}
                 disabled={busy === "publish"}
                 className="w-full h-9 rounded-md bg-success px-3 text-sm font-medium text-success-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 <Rocket className="h-3.5 w-3.5" />
                 {busy === "publish" ? "Publishing…" : "Publish ADR"}
+              </button>
+            )}
+
+            {/* Publish Rejected ADR: allows publishing ADRs rejected by users to Git for architectural record */}
+            {(adr.status === "rejected" || ((adr.status === "under_review" || adr.status === "draft") && hasRejections)) && canPublish && (
+              <button
+                onClick={() => handlePublish("rejected")}
+                disabled={busy === "publish"}
+                className="w-full h-9 rounded-md bg-rose-600 px-3 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
+                title="Publish rejected decision to Git repository for architectural traceability"
+              >
+                <Rocket className="h-3.5 w-3.5" />
+                {busy === "publish" ? "Publishing…" : "Publish Rejected ADR"}
+              </button>
+            )}
+
+            {/* Mark as Rejected (for project admin/admins to close review as declined) */}
+            {adr.status !== "rejected" && adr.status !== "published" && adr.status !== "superseded" && canPublish && (
+              <button
+                onClick={handleMarkRejected}
+                disabled={busy === "status"}
+                className="w-full h-8 rounded-md border border-rose-500/30 bg-rose-500/5 px-3 text-xs font-medium text-rose-600 hover:bg-rose-500/10 dark:text-rose-400 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                <X className="h-3.5 w-3.5" />
+                Mark as Rejected
               </button>
             )}
 

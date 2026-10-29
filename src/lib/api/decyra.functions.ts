@@ -361,7 +361,7 @@ export async function updateProjectService(userId: string, data: UpdateProjectIn
          (SELECT pv.markdown FROM published_versions pv WHERE pv.adr_id = a.id ORDER BY pv.version_number DESC LIMIT 1) AS latest_markdown
        FROM adrs a
        JOIN projects p ON p.id = a.project_id
-       WHERE a.project_id = $1 AND a.status = 'published' AND a.repository_deleted_at IS NULL
+       WHERE a.project_id = $1 AND (a.status = 'published' OR (a.current_version > 0 AND a.status IN ('published', 'rejected', 'superseded'))) AND a.repository_deleted_at IS NULL
        ORDER BY a.full_id ASC`,
       [data.id],
     );
@@ -670,7 +670,7 @@ export async function migrateAdrsFromRepositoryService(
     }
 
     const rawStatus = parsed.status?.toLowerCase();
-    const status = ["draft", "under_review", "approved", "published"].includes(rawStatus ?? "")
+    const status = ["draft", "under_review", "approved", "published", "superseded", "rejected"].includes(rawStatus ?? "")
       ? rawStatus
       : "published";
 
@@ -1948,7 +1948,7 @@ export const updateAdrStatus = createServerFn({ method: "POST" })
     z
       .object({
         id: z.string().uuid(),
-        status: z.enum(["draft", "under_review", "approved", "published", "superseded"]),
+        status: z.enum(["draft", "under_review", "approved", "published", "superseded", "rejected"]),
       })
       .parse(d),
   )
@@ -2580,6 +2580,7 @@ export const dashboardStats = createServerFn({ method: "POST" })
       approved: 0,
       published: 0,
       superseded: 0,
+      rejected: 0,
     };
     adrs.forEach((a: any) => {
       counts.total++;
@@ -2901,7 +2902,7 @@ export async function updateAdrService(userId: string, data: z.infer<typeof adrF
   set("references_data", data.references_data, "::jsonb");
 
   let nextStatus: string | null = null;
-  if (adr.status === "published" || adr.status === "superseded") {
+  if (adr.status === "published" || adr.status === "superseded" || adr.status === "rejected") {
     fields.push(`status = $${p++}`);
     vals.push("draft");
     nextStatus = "draft";
@@ -3211,74 +3212,121 @@ export const updateAdrRelationship = createServerFn({ method: "POST" })
 
 // ─── publishAdr ───────────────────────────────────────────────────────────────
 
+export async function publishAdrService(
+  userId: string,
+  data: { adr_id: string; publish_as?: "published" | "rejected" },
+) {
+  // Fetch the ADR
+  const adr = await pgOne<any>(
+    `SELECT a.*, p.code AS proj_code, p.name AS proj_name, p.repo_url, p.branch, p.adr_path, p.git_pat
+     FROM adrs a JOIN projects p ON p.id = a.project_id WHERE a.id = $1`,
+    [data.adr_id],
+  );
+  if (!adr) throw new Error("ADR not found");
+  assertDraftAdrOwner(adr, userId);
+
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const member = await pgOne<{ role: string }>(
+    "SELECT role FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, adr.project_id],
+  );
+  if (!isAdmin && member?.role !== "project_admin") {
+    throw new Error("Only project admins or platform admins can publish ADRs.");
+  }
+
+  // Check if ADR was rejected by users (has request_changes decision) or status is rejected
+  const rejections = await pgQuery<any>(
+    "SELECT 1 FROM approvals WHERE adr_id = $1 AND decision = 'request_changes'",
+    [data.adr_id],
+  );
+  const hasRejections = (rejections.rows ?? []).length > 0;
+
+  // Determine whether publishing as accepted or rejected
+  const finalStatus: "published" | "rejected" =
+    data.publish_as ??
+    (adr.status === "rejected" || (adr.status !== "approved" && hasRejections)
+      ? "rejected"
+      : "published");
+
+  // Generate Markdown with the target status in header
+  const { generateAdrMarkdown } = await import("@/lib/adr-markdown");
+  const markdown = generateAdrMarkdown({ ...adr, status: finalStatus });
+
+  // Attempt Git push (non-blocking if no repo configured)
+  let gitCommitHash: string | undefined;
+  let repositoryPath: string | undefined;
+  if (adr.repo_url) {
+    try {
+      const { pushAdrToGit } = await import("@/lib/api/git.server");
+      const pushResult = await pushAdrToGit({
+        adr: { ...adr, status: finalStatus },
+        markdown,
+        publisherUserId: userId,
+      });
+      gitCommitHash = pushResult.commitHash;
+      repositoryPath = pushResult.repositoryPath;
+    } catch (err: any) {
+      console.warn("Git push failed:", err);
+      throw new Error(`Git push failed: ${err.message}`);
+    }
+  }
+
+  // Get next version number
+  const vRow = await pgOne<{ max: number }>(
+    "SELECT COALESCE(MAX(version_number), 0) + 1 AS max FROM published_versions WHERE adr_id = $1",
+    [data.adr_id],
+  );
+  const nextVersion = vRow?.max ?? 1;
+
+  // Insert published version + update ADR status
+  await pgQuery(
+    `INSERT INTO published_versions (adr_id, version_number, markdown, git_commit_hash, published_by)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [data.adr_id, nextVersion, markdown, gitCommitHash ?? null, userId],
+  );
+  await pgQuery(
+    `UPDATE adrs SET status = $1, current_version = $2,
+     repository_path = COALESCE($3, repository_path), repository_deleted_at = NULL
+     WHERE id = $4`,
+    [finalStatus, nextVersion, repositoryPath ?? null, data.adr_id],
+  );
+  await recordAdrTimelineEvent({
+    adr_id: data.adr_id,
+    user_id: userId,
+    event_type: "published",
+    summary:
+      finalStatus === "rejected"
+        ? `Published rejected decision as v${nextVersion}${gitCommitHash ? ` (${gitCommitHash.slice(0, 7)})` : ""}`
+        : `Published version v${nextVersion}${gitCommitHash ? ` (${gitCommitHash.slice(0, 7)})` : ""}`,
+    changes: {
+      status: finalStatus,
+      version: nextVersion,
+      git_commit_hash: gitCommitHash ?? null,
+      repository_path: repositoryPath ?? adr.repository_path ?? null,
+    },
+  });
+
+  return { version: nextVersion, gitCommitHash, markdown, status: finalStatus };
+}
+
 export const publishAdr = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
-  .validator((d: unknown) => z.object({ adr_id: z.string().uuid() }).parse(d))
+  .validator((d: unknown) =>
+    z
+      .object({
+        adr_id: z.string().uuid(),
+        publish_as: z.enum(["published", "rejected"]).optional(),
+      })
+      .parse(d),
+  )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
-
-    // Fetch the ADR
-    const adr = await pgOne<any>(
-      `SELECT a.*, p.code AS proj_code, p.name AS proj_name, p.repo_url, p.branch, p.adr_path, p.git_pat
-       FROM adrs a JOIN projects p ON p.id = a.project_id WHERE a.id = $1`,
-      [data.adr_id],
-    );
-    if (!adr) throw new Error("ADR not found");
-    assertDraftAdrOwner(adr, userId);
-
-    // Generate Markdown
-    const { generateAdrMarkdown } = await import("@/lib/adr-markdown");
-    const markdown = generateAdrMarkdown(adr);
-
-    // Attempt Git push (non-blocking if no repo configured)
-    let gitCommitHash: string | undefined;
-    let repositoryPath: string | undefined;
-    if (adr.repo_url) {
-      try {
-        const { pushAdrToGit } = await import("@/lib/api/git.server");
-        const pushResult = await pushAdrToGit({ adr, markdown, publisherUserId: userId });
-        gitCommitHash = pushResult.commitHash;
-        repositoryPath = pushResult.repositoryPath;
-      } catch (err: any) {
-        console.warn("Git push failed:", err);
-        throw new Error(`Git push failed: ${err.message}`);
-      }
-    }
-
-    // Get next version number
-    const vRow = await pgOne<{ max: number }>(
-      "SELECT COALESCE(MAX(version_number), 0) + 1 AS max FROM published_versions WHERE adr_id = $1",
-      [data.adr_id],
-    );
-    const nextVersion = vRow?.max ?? 1;
-
-    // Insert published version + update ADR status
-    await pgQuery(
-      `INSERT INTO published_versions (adr_id, version_number, markdown, git_commit_hash, published_by)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [data.adr_id, nextVersion, markdown, gitCommitHash ?? null, userId],
-    );
-    await pgQuery(
-      `UPDATE adrs SET status = 'published', current_version = $1,
-       repository_path = COALESCE($2, repository_path), repository_deleted_at = NULL
-       WHERE id = $3`,
-      [nextVersion, repositoryPath ?? null, data.adr_id],
-    );
-    await recordAdrTimelineEvent({
-      adr_id: data.adr_id,
-      user_id: userId,
-      event_type: "published",
-      summary: `Published version v${nextVersion}${gitCommitHash ? ` (${gitCommitHash.slice(0, 7)})` : ""}`,
-      changes: {
-        version: nextVersion,
-        git_commit_hash: gitCommitHash ?? null,
-        repository_path: repositoryPath ?? adr.repository_path ?? null,
-      },
-    });
-    await publishAdrCollaborationSignal(context, data.adr_id, "status", "published");
-
-    return { version: nextVersion, gitCommitHash, markdown };
+    const result = await publishAdrService(context.userId, data);
+    await publishAdrCollaborationSignal(context, data.adr_id, "status", result.status);
+    return result;
   });
 
 // ─── findSimilarAdrs ──────────────────────────────────────────────────────────

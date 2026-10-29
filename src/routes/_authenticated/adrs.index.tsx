@@ -37,6 +37,7 @@ function AllAdrs() {
           <option value="approved">Approved</option>
           <option value="published">Published</option>
           <option value="superseded">Superseded</option>
+          <option value="rejected">Rejected</option>
         </select>
       </div>
 

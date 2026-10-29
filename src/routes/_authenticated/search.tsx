@@ -19,6 +19,7 @@ const STATUSES = [
   { value: "approved", label: "Approved" },
   { value: "published", label: "Published" },
   { value: "superseded", label: "Superseded" },
+  { value: "rejected", label: "Rejected" },
 ];
 
 function SearchPage() {

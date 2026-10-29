@@ -52,6 +52,7 @@ const STATUS_COLORS: Record<"dark" | "light", Record<string, { border: string; b
     approved: { border: "#34d399", bg: "rgba(52, 211, 153, 0.15)", text: "#a7f3d0" },
     published: { border: "#60a5fa", bg: "rgba(96, 165, 250, 0.15)", text: "#bfdbfe" },
     superseded: { border: "#9ca3af", bg: "rgba(156, 163, 175, 0.15)", text: "#d1d5db" },
+    rejected: { border: "#f43f5e", bg: "rgba(244, 63, 94, 0.15)", text: "#fda4af" },
   },
   light: {
     draft: { border: "#4f46e5", bg: "rgba(79, 70, 229, 0.10)", text: "#4338ca" },
@@ -59,6 +60,7 @@ const STATUS_COLORS: Record<"dark" | "light", Record<string, { border: string; b
     approved: { border: "#059669", bg: "rgba(5, 150, 105, 0.10)", text: "#047857" },
     published: { border: "#2563eb", bg: "rgba(37, 99, 235, 0.10)", text: "#1d4ed8" },
     superseded: { border: "#64748b", bg: "rgba(100, 116, 139, 0.10)", text: "#475569" },
+    rejected: { border: "#e11d48", bg: "rgba(225, 29, 72, 0.10)", text: "#be123c" },
   },
 };
 

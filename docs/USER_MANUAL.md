@@ -200,9 +200,10 @@ stateDiagram-v2
     Draft --> Under_Review: Submit for review
     Under_Review --> Draft: Edit / Request Changes
     Under_Review --> Approved: Required approvals met
-    Approved --> Published: Project Admin publishes
-    Published --> Draft: Edit published ADR (bumps version)
+    Approved --> Published: Project Admin publishes (Accepted)
     Under_Review --> Rejected: Decision rejected
+    Rejected --> Published: Project Admin publishes (Rejected decision)
+    Published --> Draft: Edit published ADR (bumps version)
     Published --> Superseded: Superseded by newer ADR
 ```
 
@@ -211,7 +212,7 @@ stateDiagram-v2
 3. **Approved**: The required number of positive approvals (configured per project) has been achieved.
 4. **Published**: Immutable versioned record (`v1`). Decyra formats the Markdown and commits it to Git.
 5. **Superseded**: Deprecated by a newer architectural decision.
-6. **Rejected**: Decision evaluated but declined by the engineering team.
+6. **Rejected**: Decision evaluated but declined by the engineering team. **Rejected ADRs can be published to Git** to permanently document why an architectural approach was declined, preventing teams from repeating evaluated trade-offs.
 
 ---
 

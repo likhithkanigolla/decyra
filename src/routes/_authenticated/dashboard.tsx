@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import {
   FileText, FolderKanban, Clock, CheckCircle, Send, BookOpen,
-  TrendingUp, UserCheck, MessageSquare, CheckCircle2, ChevronRight
+  TrendingUp, UserCheck, MessageSquare, CheckCircle2, ChevronRight, XCircle
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
@@ -20,6 +20,7 @@ const STATUS_COLORS: Record<string, string> = {
   approved: "#10b981",
   published: "#3b82f6",
   superseded: "#6b7280",
+  rejected: "#f43f5e",
 };
 
 const STATUS_ICONS: Record<string, React.ReactNode> = {
@@ -27,6 +28,7 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
   under_review: <Clock className="h-4 w-4" />,
   approved: <CheckCircle className="h-4 w-4" />,
   published: <BookOpen className="h-4 w-4" />,
+  rejected: <XCircle className="h-4 w-4 text-rose-500" />,
 };
 
 function Dashboard() {
@@ -36,7 +38,7 @@ function Dashboard() {
   const { data } = useQuery({ queryKey: ["dashboard"], queryFn: () => statsFn() });
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: () => meFn() });
 
-  const c = data?.counts ?? { total: 0, draft: 0, under_review: 0, approved: 0, published: 0, superseded: 0 };
+  const c = data?.counts ?? { total: 0, draft: 0, under_review: 0, approved: 0, published: 0, superseded: 0, rejected: 0 };
   const recent = data?.recent ?? [];
 
   const pieData = [
@@ -45,6 +47,7 @@ function Dashboard() {
     { name: "Approved", value: c.approved, key: "approved" },
     { name: "Published", value: c.published, key: "published" },
     { name: "Superseded", value: c.superseded, key: "superseded" },
+    { name: "Rejected", value: (c as any).rejected ?? 0, key: "rejected" },
   ].filter((d) => d.value > 0);
 
   const reviewRequired = data?.reviewRequired ?? [];

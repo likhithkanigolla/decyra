@@ -4,6 +4,7 @@ const STATUS_STYLES: Record<string, string> = {
   approved: "bg-success/15 text-success border border-success/30",
   published: "bg-primary/15 text-primary border border-primary/30",
   superseded: "bg-warning/15 text-warning border border-warning/30",
+  rejected: "bg-destructive/15 text-destructive border border-destructive/30",
 };
 
 const LABELS: Record<string, string> = {
@@ -12,6 +13,7 @@ const LABELS: Record<string, string> = {
   approved: "Approved",
   published: "Published",
   superseded: "Superseded",
+  rejected: "Rejected",
 };
 
 export function StatusBadge({ status }: { status: string }) {

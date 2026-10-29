@@ -283,7 +283,7 @@ async function updateTrackedAdr(
 ) {
   const shouldReturnToReview =
     (contentChanged || adr.repository_deleted_at) &&
-    (adr.status === "published" || adr.status === "approved");
+    (adr.status === "published" || adr.status === "approved" || adr.status === "rejected");
   const nextStatus = shouldReturnToReview ? "under_review" : adr.status;
   const values = {
     title: parsed.title,
@@ -376,7 +376,7 @@ async function syncMarkdownFile(
       await updateTrackedAdr(existingAdr, repositoryPath, parsed, contentChanged);
       if (
         (contentChanged || existingAdr.repository_deleted_at) &&
-        (existingAdr.status === "published" || existingAdr.status === "approved")
+        (existingAdr.status === "published" || existingAdr.status === "approved" || existingAdr.status === "rejected")
       ) {
         existingAdr.status = "under_review";
       }
