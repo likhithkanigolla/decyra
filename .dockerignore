@@ -12,6 +12,12 @@ recovery-keys/
 *.key
 *.pem
 
+# Backups and database dumps
+*.sql
+*.dump
+*.tar
+*.tar.gz
+
 # Dependencies and build outputs
 node_modules/
 .output/

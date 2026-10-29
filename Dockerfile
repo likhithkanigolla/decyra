@@ -6,9 +6,9 @@ WORKDIR /app
 # Install git and build essentials if needed
 RUN apk add --no-cache git
 
-# Install dependencies using npm
+# Install dependencies using npm ci (much faster and deterministic)
 COPY package.json package-lock.json ./
-RUN npm install
+RUN npm ci
 
 # Copy application source
 COPY . .
@@ -32,16 +32,13 @@ WORKDIR /app
 # Install git and certificates required for git clone/push operations
 RUN apk add --no-cache git openssh-client ca-certificates
 
-# Install ONLY production dependencies for a lightweight image
+# Install ONLY production dependencies using npm ci
 COPY package.json package-lock.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 
 # Copy built assets and necessary runtime files
 COPY --from=builder --chown=node:node /app/.output ./.output
 COPY --from=builder --chown=node:node /app/migrations ./migrations
-
-# Ensure app directory permissions for node user
-RUN chown -R node:node /app
 
 # Set environment variables
 ENV NODE_ENV=production
