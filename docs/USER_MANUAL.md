@@ -308,9 +308,12 @@ Decyra cleanly separates peer review feedback from executive architectural gover
 - **Authoritative Approval & Rejection**:
   - Admins can click **Final Approve** or **Final Reject** to authoritatively set the ADR status, irrespective of the current vote count.
   - If an admin personally voted to reject an ADR, their personal vote remains permanently recorded as `Rejected` in the review audit trail, while their administrative decision notes `(Overrode Personal Rejection)`.
-- **Mandatory Rationale for Overrides**:
-  - When an admin executes an administrative override (e.g., approving an ADR with insufficient approvals, overriding existing rejections, or overriding their own personal rejection), entering a **detailed rationale comment (at least 15 characters)** is strictly mandatory.
-  - Click **Auto-draft rationale** to populate a structured template summarizing current vote counts and required justifications.
+- **Mandatory Custom Rationale for Overrides & Auto-Appended System Audit**:
+  - When an admin executes an administrative override (e.g., approving an ADR with insufficient approvals, overriding existing rejections, or overriding their own personal rejection), entering a **detailed custom rationale comment (at least 2 sentences / 60 characters and 10+ unique words)** is strictly mandatory.
+  - To prevent rubber-stamping, auto-drafting is disabled for overrides; canned phrases, single sentences, and unedited template placeholders are rejected by both client and server validation.
+  - When submitted, Decyra automatically formats and appends the project vote statistics and official system audit notice directly to the recorded comment:
+    > *🏛️ [Admin Final Approval] <Admin's custom rationale>*\
+    > *> 📋 **System Audit Notice**: This project requires 3 approvals (Current status: 1 approval(s), 0 rejection(s)). Decision enacted via Administrative Override.*
 
 ---
 

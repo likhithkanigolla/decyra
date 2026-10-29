@@ -311,7 +311,8 @@ describe("Publishing Rejected ADRs", () => {
     const res = await submitFinalDecisionService(adminUserId, {
       adr_id: adrId,
       decision: "approved",
-      comment: "Approved by Root Admin after reviewing team concerns.",
+      comment:
+        "Approved by Root Admin after reviewing team concerns and evaluating architecture. This decision unblocks the core infrastructure milestone while addressing all team trade-offs and operational dependencies as scheduled in our technical roadmap and operational readiness review documentation for the upcoming platform release cycle.",
     });
 
     expect(res.ok).toBe(true);

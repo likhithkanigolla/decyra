@@ -5,6 +5,7 @@ import { z } from "zod";
 import { randomBytes } from "node:crypto";
 import { parseAdrMarkdown, extractAdrIdentifier, inspectAdrIdentifier } from "@/lib/adr-markdown";
 import { getDatabaseConfig } from "@/integrations/database/config";
+import { validateOverrideRationale } from "@/lib/utils";
 import * as Y from "yjs";
 
 // Helper: cast middleware context to the correct type
@@ -2232,10 +2233,11 @@ export async function submitFinalDecisionService(
     (data.decision === "rejected" && approvedCount >= requiredApprovals && rejectedCount === 0);
 
   const commentText = data.comment?.trim() ?? "";
-  if (isOverriding && commentText.length < 15) {
-    throw new Error(
-      "A detailed rationale comment (at least 15 characters) is mandatory when overriding review criteria or existing rejections."
-    );
+  if (isOverriding) {
+    const check = validateOverrideRationale(commentText);
+    if (!check.valid) {
+      throw new Error(check.error);
+    }
   }
 
   // Update ADR status directly (irrespective of team votes)
@@ -2245,7 +2247,7 @@ export async function submitFinalDecisionService(
   // The user's personal vote (e.g. request_changes) remains intact so the review audit trail
   // truthfully shows their peer review stance.
 
-  // Post the official administrative decision comment
+  // Post the official administrative decision comment with auto-attached system audit details
   const roleLabel = isAdmin ? "Platform Admin" : "Project Admin";
   if (commentText) {
     const prefix =
@@ -2256,9 +2258,14 @@ export async function submitFinalDecisionService(
       userPersonallyRejected && data.decision === "approved"
         ? " (Overrode Personal Rejection)"
         : "";
+
+    const systemAuditNote = isOverriding
+      ? `\n\n> 📋 **System Audit Notice**: This project requires ${requiredApprovals} approvals (Current status: ${approvedCount} approval(s), ${rejectedCount} rejection(s)). Decision enacted via Administrative Override.`
+      : "";
+
     await pgQuery(
       "INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)",
-      [data.adr_id, userId, `${prefix}${overrideSuffix} ${commentText}`],
+      [data.adr_id, userId, `${prefix}${overrideSuffix} ${commentText}${systemAuditNote}`],
     );
   }
 

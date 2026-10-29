@@ -11,7 +11,7 @@ import { StatusBadge } from "@/components/decyra/StatusBadge";
 import { SimpleMarkdown } from "@/components/decyra/RichEditor";
 import { DEFAULT_ADR_FORM, type AdrFormData } from "@/components/decyra/AdrForm";
 import { useAdrCollaboration, type AdrCollaborationState } from "@/hooks/useAdrCollaboration";
-import { getErrorMessage } from "@/lib/utils";
+import { getErrorMessage, validateOverrideRationale } from "@/lib/utils";
 import { useState, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import {
@@ -164,22 +164,10 @@ function AdrDetail() {
 
   function autoFillAdminRationale(decision: "approved" | "rejected") {
     if (decision === "approved") {
-      if (isApproveOverride) {
-        const reasons: string[] = [];
-        if (approvedCount < requiredApprovals) reasons.push(`${approvedCount}/${requiredApprovals} required approvals`);
-        if (rejectedCount > 0) reasons.push(`${rejectedCount} existing rejection(s)`);
-        if (userPersonallyRejected) reasons.push("including my personal rejection");
-        setFinalComment(
-          `This project requires ${requiredApprovals} approvals. Current status: ${approvedCount} approval(s) and ${rejectedCount} rejection(s). Although standard review criteria were not satisfied (${reasons.join(", ")}), this ADR is being approved by Admin authority because: [state reason here]`
-        );
-      } else {
-        setFinalComment(
-          `This project requires ${requiredApprovals} approvals. Current status: ${approvedCount} approval(s) and 0 rejections. Approved by Admin authority.`
-        );
-      }
+      setFinalComment("Standard project review criteria have been met. Approving decision for engineering implementation.");
     } else {
       setFinalComment(
-        `This project requires ${requiredApprovals} approvals. Current status: ${approvedCount} approval(s) and ${rejectedCount} rejection(s). Rejected by Admin authority because: [state reason here]`
+        "This decision is declined after evaluating the architectural trade-offs. The team will pursue the proposed alternatives outlined in the document."
       );
     }
   }
@@ -325,9 +313,12 @@ function AdrDetail() {
       );
       return;
     }
-    if (decision === "approved" && isApproveOverride && finalComment.trim().length < 15) {
-      toast.error("A detailed rationale comment (at least 15 characters) is mandatory when overriding review criteria or rejections.");
-      return;
+    if (decision === "approved" && isApproveOverride) {
+      const check = validateOverrideRationale(finalComment);
+      if (!check.valid) {
+        toast.error(check.error || "A detailed rationale comment is mandatory when overriding review criteria or rejections.");
+        return;
+      }
     }
     setBusy("final_decision");
     try {
@@ -1211,7 +1202,7 @@ function AdrDetail() {
                             Current: {approvedCount}/{requiredApprovals} approvals
                             {rejectedCount > 0 ? `, ${rejectedCount} rejection(s)` : ""}
                             {userPersonallyRejected ? " (including your personal rejection)" : ""}.
-                            A detailed rationale (min 15 chars) is mandatory to override.
+                            Provide at least 2 sentences (60 chars). System automatically attaches project vote stats.
                           </p>
                         </div>
                       )}
@@ -1223,32 +1214,57 @@ function AdrDetail() {
                           rows={3}
                           placeholder={
                             isApproveOverride
-                              ? "Mandatory rationale for overriding review criteria…"
+                              ? "Enter your architectural rationale (at least 2 sentences explaining why this override is necessary)…"
                               : "Official administrative rationale…"
                           }
                           className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-primary"
                         />
                         <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                          <button
-                            type="button"
-                            onClick={() => autoFillAdminRationale("approved")}
-                            className="text-primary hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
-                          >
-                            <Sparkles className="h-3 w-3" /> Auto-draft rationale
-                          </button>
+                          {!isApproveOverride ? (
+                            <button
+                              type="button"
+                              onClick={() => autoFillAdminRationale("approved")}
+                              className="text-primary hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <Sparkles className="h-3 w-3" /> Auto-draft rationale
+                            </button>
+                          ) : (
+                            <span className="text-muted-foreground italic text-[10px]">
+                              Auto-draft disabled: custom justification required
+                            </span>
+                          )}
                           {isApproveOverride && (
                             <span
                               className={
-                                finalComment.trim().length >= 15
+                                validateOverrideRationale(finalComment).valid
                                   ? "text-emerald-600 dark:text-emerald-400 font-mono font-medium"
                                   : "text-amber-600 dark:text-amber-400 font-mono"
                               }
                             >
-                              {finalComment.trim().length}/15 chars min
+                              {validateOverrideRationale(finalComment).valid
+                                ? "✓ Rationale criteria met"
+                                : `${finalComment.trim().length}/60 chars (min 2 sentences)`}
                             </span>
                           )}
                         </div>
+                        {isApproveOverride && finalComment.trim().length > 0 && !validateOverrideRationale(finalComment).valid && (
+                          <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium leading-tight">
+                            {validateOverrideRationale(finalComment).error}
+                          </p>
+                        )}
                       </div>
+
+                      {isApproveOverride && (
+                        <div className="rounded-md border border-primary/20 bg-primary/5 p-2 text-[10px] text-muted-foreground space-y-0.5">
+                          <div className="font-semibold text-foreground flex items-center gap-1 text-[11px]">
+                            <Shield className="h-3 w-3 text-primary" />
+                            <span>System Audit Guarantee</span>
+                          </div>
+                          <p className="text-[10px] leading-relaxed">
+                            Decyra will automatically attach the official voting statistics and audit stamp to your rationale upon approval.
+                          </p>
+                        </div>
+                      )}
 
                       {isLockedByReviewers && (
                         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-200 space-y-1">
@@ -1267,12 +1283,16 @@ function AdrDetail() {
                         <button
                           type="button"
                           onClick={() => handleFinalDecision("approved")}
-                          disabled={busy === "final_decision" || isLockedByReviewers || (isApproveOverride && finalComment.trim().length < 15)}
+                          disabled={
+                            busy === "final_decision" ||
+                            isLockedByReviewers ||
+                            (isApproveOverride && !validateOverrideRationale(finalComment).valid)
+                          }
                           title={
                             isLockedByReviewers
                               ? "Final decision locked: pending reviews from " + pendingReviewers.map((r: any) => '@' + (r.username || r.full_name)).join(', ')
-                              : isApproveOverride && finalComment.trim().length < 15
-                              ? "Provide at least 15 characters rationale explaining the override"
+                              : isApproveOverride && !validateOverrideRationale(finalComment).valid
+                              ? validateOverrideRationale(finalComment).error || "Provide at least 2 sentences (60 characters) explaining the override"
                               : "Approve this ADR authoritatively"
                           }
                           className="h-8.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors cursor-pointer"

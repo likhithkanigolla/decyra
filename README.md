@@ -19,7 +19,7 @@ Built on TanStack Start (React SSR), PostgreSQL, and Git, Decyra empowers engine
 - **Multiple Reviewers & Review Blocker**: Request formal reviews from multiple teammates. Until all requested reviewers submit their decision or their request is explicitly revoked, **no one (including platform and project admins) can make the final call or publish the ADR**.
 - **Review Request Revocation & Full Audit Trail**: Requesters, reviewers, or admins can revoke review requests when needed (e.g., reviewer on leave), immediately unblocking decisions with full logging in timeline events and discussion comments.
 - **Independent Personal Review & Administrative Decisions**: Team members submit peer votes (**Approve** or **Request Changes**). Project/Platform Admins have dedicated **Admin Final Decision** controls (**Final Approve** or **Final Reject**). Personal review stances remain preserved in the audit log even if overridden.
-- **Mandatory Rationale for Overrides**: When an admin overrides standard review criteria or existing team rejections, providing a detailed rationale (at least 15 characters) is strictly enforced, with an **Auto-draft rationale** helper.
+- **Mandatory Rationale for Overrides & Auto-Appended System Audit**: When an admin overrides standard review criteria or existing team rejections, providing at least 2 sentences (60+ characters) of custom architectural rationale is strictly enforced, and Decyra automatically attaches the formal audit boilerplate and project vote statistics.
 - **Publishing Accepted & Rejected Decisions**: Both Accepted and Rejected ADRs can be published directly to Git to permanently document accepted architectural patterns as well as rejected alternatives.
 - **Strict Immutability & Supersede Workflow**: Finalized and published ADRs are immutable historical records that cannot be overwritten or modified in place. Evolution of architecture follows the industry-standard **supersede** workflow (`Supersedes ADR-XXX`).
 - **Interactive Visual Graph Canvas & Diagrammer**: Drag-to-connect visual dependency mapping (`depends_on`, `supersedes`, `replaced_by`, `affects`, `conflicts_with`, `related_to`) powered by React Flow with bidirectional arrow semantics, click-to-edit connection modal, persistent custom layouts, and high-contrast light/dark themes.
@@ -131,7 +131,7 @@ npm run reset-password <email-or-username> <new-password>
 - Navigate sequentially through decisions with header arrows or keyboard keys (`←` / `→`).
 
 ### 4. Admin Final Decisions & Publishing to Git
-- Project and Platform Admins can issue **Final Approve** or **Final Reject** decisions. Overrides require a mandatory 15-character rationale.
+- Project and Platform Admins can issue **Final Approve** or **Final Reject** decisions. Overrides require at least 2 sentences (60+ characters) of custom rationale, and Decyra automatically attaches project vote statistics and audit details.
 - Both Accepted and Rejected ADRs can be published to Git by an admin.
 - Once published, an ADR is an immutable record. To alter architectural direction, create a new ADR that supersedes the published record.
 

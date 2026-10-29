@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cn, getErrorMessage } from "@/lib/utils";
+import { cn, getErrorMessage, validateOverrideRationale } from "@/lib/utils";
 
 describe("utils", () => {
   describe("cn", () => {
@@ -67,6 +67,60 @@ describe("utils", () => {
 
       const jsonErrorErr = JSON.stringify({ error: "Unauthorized access" });
       expect(getErrorMessage(new Error(jsonErrorErr), "Fallback")).toBe("Unauthorized access");
+    });
+  });
+
+  describe("validateOverrideRationale", () => {
+    it("rejects empty or whitespace rationale", () => {
+      const res = validateOverrideRationale("   ");
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain("at least 2 sentences / 60 characters");
+    });
+
+    it("rejects comments with fewer than 60 characters", () => {
+      const res = validateOverrideRationale("Short reason. Another sentence.");
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain("at least 2 sentences / 60 characters");
+    });
+
+    it("rejects canned boilerplate sentences", () => {
+      const canned =
+        "This override is required to unblock upcoming delivery milestones. Any technical debt and operational risks will be scheduled for remediation in the next release cycle.";
+      const res = validateOverrideRationale(canned);
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain("Generic canned text or unedited placeholders are not permitted");
+    });
+
+    it("rejects unedited placeholder brackets", () => {
+      const res = validateOverrideRationale(
+        "We need this approved right away. [State detailed architectural justification here for the team]."
+      );
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain("Generic canned text or unedited placeholders are not permitted");
+    });
+
+    it("rejects single long sentences lacking sentence breaks", () => {
+      const singleSentence =
+        "This is an override rationale that has sufficient characters to pass sixty character count but only contains one long run-on sentence without any period";
+      const res = validateOverrideRationale(singleSentence);
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain("must contain at least 2 complete sentences");
+    });
+
+    it("rejects repetitive word stuffing with low vocabulary diversity", () => {
+      const spam =
+        "Override override override override. Override override override override override override override.";
+      const res = validateOverrideRationale(spam);
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain("at least 10 unique words required");
+    });
+
+    it("accepts genuine, multi-sentence architectural justification", () => {
+      const valid =
+        "We are adopting PostgreSQL JSONB instead of DynamoDB for this service. Team concerns regarding migration complexity are mitigated by writing automated Liquibase migrations.";
+      const res = validateOverrideRationale(valid);
+      expect(res.valid).toBe(true);
+      expect(res.error).toBeUndefined();
     });
   });
 });

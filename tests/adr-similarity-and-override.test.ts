@@ -151,7 +151,8 @@ describe("ADR Similarity Checking & Admin Override Rationale", () => {
       const res = await submitFinalDecisionService(adminUserId, {
         adr_id: adrId,
         decision: "approved",
-        comment: "Overriding previous concerns because business deadline requires this immediately.",
+        comment:
+          "Overriding previous concerns because business deadline requires this database architecture immediately to unblock release milestone 2. The technical debt and operational considerations identified by the engineering team have been logged into the Q1 roadmap for dedicated remediation, testing, and team review.",
       });
 
       expect(res.ok).toBe(true);
@@ -159,11 +160,12 @@ describe("ADR Similarity Checking & Admin Override Rationale", () => {
       expect(updatedStatus).toBe("approved");
       // Critical check: approvals table must NOT have been updated or overwritten!
       expect(approvalsUpdated).toBe(false);
-      // Comment reflects override
+      // Comment reflects override and auto-attached system audit notice
       expect(insertedComment).toContain("Overrode Personal Rejection");
+      expect(insertedComment).toContain("System Audit Notice");
     });
 
-    it("rejects override when mandatory rationale comment is too short (< 15 characters)", async () => {
+    it("rejects override when mandatory rationale comment is too short (< 60 characters)", async () => {
       vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
         if (sql.includes("FROM adrs")) {
           return {
@@ -196,9 +198,85 @@ describe("ADR Similarity Checking & Admin Override Rationale", () => {
         submitFinalDecisionService(adminUserId, {
           adr_id: adrId,
           decision: "approved",
-          comment: "Short note",
+          comment: "Too short note.",
         }),
-      ).rejects.toThrow("at least 15 characters");
+      ).rejects.toThrow("at least 2 sentences / 60 characters");
+    });
+
+    it("rejects override when rationale uses canned cop-out text", async () => {
+      vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+        if (sql.includes("FROM adrs")) {
+          return {
+            status: "under_review",
+            author_id: regularUserId,
+            project_id: projectId,
+            full_id: "DEC-005",
+            title: "Message Queue",
+            current_version: 0,
+            required_approvals: 3,
+          };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return { 1: 1 };
+        }
+        return null;
+      });
+
+      vi.spyOn(postgres, "query").mockImplementation(async (sql) => {
+        if (sql.includes("SELECT user_id, decision FROM approvals")) {
+          return {
+            rows: [{ user_id: "reviewer-1", decision: "approve" }],
+          } as unknown as QueryResult<Record<string, unknown>>;
+        }
+        return { rows: [] } as any;
+      });
+
+      await expect(
+        submitFinalDecisionService(adminUserId, {
+          adr_id: adrId,
+          decision: "approved",
+          comment:
+            "This override is required to unblock upcoming delivery milestones. Any technical debt and operational risks will be scheduled for remediation in the next release cycle.",
+        }),
+      ).rejects.toThrow("Generic canned text or unedited placeholders are not permitted");
+    });
+
+    it("rejects override when rationale is only a single sentence", async () => {
+      vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+        if (sql.includes("FROM adrs")) {
+          return {
+            status: "under_review",
+            author_id: regularUserId,
+            project_id: projectId,
+            full_id: "DEC-005",
+            title: "Message Queue",
+            current_version: 0,
+            required_approvals: 3,
+          };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+          return { 1: 1 };
+        }
+        return null;
+      });
+
+      vi.spyOn(postgres, "query").mockImplementation(async (sql) => {
+        if (sql.includes("SELECT user_id, decision FROM approvals")) {
+          return {
+            rows: [{ user_id: "reviewer-1", decision: "approve" }],
+          } as unknown as QueryResult<Record<string, unknown>>;
+        }
+        return { rows: [] } as any;
+      });
+
+      await expect(
+        submitFinalDecisionService(adminUserId, {
+          adr_id: adrId,
+          decision: "approved",
+          comment:
+            "This is an override rationale that easily passes the minimum character length but has no second sentence whatsoever",
+        }),
+      ).rejects.toThrow("must contain at least 2 complete sentences");
     });
   });
 });
