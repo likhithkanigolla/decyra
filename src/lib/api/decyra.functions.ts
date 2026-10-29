@@ -32,14 +32,26 @@ function assertDraftAdrOwner(adr: { status: string; author_id: string }, userId:
 }
 
 async function assertDraftAdrVisible(context: AuthContext, adrId: string) {
-  const adr = await pgOne<{ status: string; author_id: string }>(
-    "SELECT status, author_id FROM adrs WHERE id = $1",
+  const adr = await pgOne<{ status: string; author_id: string; project_id: string }>(
+    "SELECT status, author_id, project_id FROM adrs WHERE id = $1",
     [adrId],
   );
 
   if (!adr) throw new Error("ADR not found.");
   assertDraftAdrOwner(adr, context.userId);
+
+  const [admin, membership] = await Promise.all([
+    pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [context.userId]),
+    pgOne("SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2", [
+      context.userId,
+      adr.project_id,
+    ]),
+  ]);
+  if (!admin && !membership) {
+    throw new Error("Unauthorized: You do not have access to this ADR's project.");
+  }
 }
+
 
 type AdrCollaborationAccess = {
   author_id: string;
@@ -1095,13 +1107,20 @@ export const loginLocalFn = createServerFn({ method: "POST" })
     z.object({ identifier: z.string().min(1), password: z.string() }).parse(d),
   )
   .handler(async ({ data }) => {
+    const { assertRateLimit, resetRateLimit } = await import("@/lib/rate-limiter");
+    const cleanId = data.identifier.trim().replace(/^@/, "").toLowerCase();
+    assertRateLimit(`login:${cleanId}`, 10, 15 * 60_000, "login");
+
     const { loginLocal } = await import("@/integrations/database/local-auth.server");
-    return loginLocal(data.identifier, data.password);
+    const result = await loginLocal(data.identifier, data.password);
+    resetRateLimit(`login:${cleanId}`);
+    return result;
   });
 
 // ─── lookupEmailByUsernameFn ──────────────────────────────────────────────────
 
 export const lookupEmailByUsernameFn = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ username: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const cleanUsername = data.username.trim().replace(/^@/, "").toLowerCase();
@@ -1165,10 +1184,14 @@ export const generateRecoveryKeyFn = createServerFn({ method: "POST" })
     if (!dbConfig.isLocal) {
       throw new Error("Recovery key generation is only available in local PostgreSQL mode.");
     }
-    const { queryOne } = await import("@/integrations/database/postgres");
+
+    const { assertRateLimit } = await import("@/lib/rate-limiter");
     const cleanId = data.identifier.trim().replace(/^@/, "").toLowerCase();
-    const user = await queryOne<{ id: string; email: string }>(
-      `SELECT u.id, u.email 
+    assertRateLimit(`recovery-gen:${cleanId}`, 3, 15 * 60_000, "recovery key generation");
+
+    const { queryOne } = await import("@/integrations/database/postgres");
+    const user = await queryOne<{ id: string; email: string; recovery_key_hash: string | null }>(
+      `SELECT u.id, u.email, u.recovery_key_hash 
        FROM public.local_users u
        LEFT JOIN public.profiles p ON u.id = p.id
        WHERE LOWER(u.email) = $1 
@@ -1180,14 +1203,22 @@ export const generateRecoveryKeyFn = createServerFn({ method: "POST" })
       throw new Error("No user found with the provided email or username.");
     }
 
-    const { generateAndSaveRecoveryKey } =
-      await import("@/integrations/database/local-auth.server");
-    await generateAndSaveRecoveryKey(user.id, user.email);
-
+    const fs = await import("fs");
+    const path = await import("path");
     const sanitizedEmail = user.email.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const keyFilePath = path.resolve(process.cwd(), "recovery-keys", `${sanitizedEmail}.recovery.key`);
+
+    // If a valid recovery key file already exists on the server, do not overwrite the hash
+    if (!fs.existsSync(keyFilePath) || !user.recovery_key_hash) {
+      const { generateAndSaveRecoveryKey } =
+        await import("@/integrations/database/local-auth.server");
+      await generateAndSaveRecoveryKey(user.id, user.email);
+    }
+
     return {
       success: true,
       email: user.email,
+      message: "A recovery key file is available on the server. Please check the server recovery-keys directory.",
       filePath: `recovery-keys/${sanitizedEmail}.recovery.key`,
     };
   });
@@ -1209,12 +1240,39 @@ export const resetPasswordWithRecoveryKeyFn = createServerFn({ method: "POST" })
     if (!dbConfig.isLocal) {
       throw new Error("Recovery key reset is only available in local PostgreSQL mode.");
     }
+    const { assertRateLimit } = await import("@/lib/rate-limiter");
+    const cleanId = data.identifier.trim().replace(/^@/, "").toLowerCase();
+    assertRateLimit(`pwd-reset:${cleanId}`, 5, 15 * 60_000, "password reset");
+
     const { resetPasswordWithRecoveryKey } =
       await import("@/integrations/database/local-auth.server");
     return resetPasswordWithRecoveryKey(data.identifier, data.recoveryKey, data.newPassword);
   });
 
 // ─── addProjectMember ─────────────────────────────────────────────────────────
+
+export async function addProjectMemberService(
+  userId: string,
+  data: { project_id: string; user_id: string; role: "project_admin" | "engineer" | "intern" }
+) {
+  const [admin, projectAdmin] = await Promise.all([
+    pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
+    pgOne(
+      "SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = 'project_admin'",
+      [data.project_id, userId],
+    ),
+  ]);
+  if (!admin && !projectAdmin) {
+    throw new Error("Only admins or project admins can manage project data.");
+  }
+
+  await pgQuery(
+    `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)
+     ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+    [data.project_id, data.user_id, data.role],
+  );
+  return { ok: true };
+}
 
 export const addProjectMember = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
@@ -1227,24 +1285,56 @@ export const addProjectMember = createServerFn({ method: "POST" })
       })
       .parse(d),
   )
-  .handler(async ({ data }) => {
-    await pgQuery(
-      `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)
-       ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
-      [data.project_id, data.user_id, data.role],
-    );
-    return { ok: true };
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return addProjectMemberService(context.userId, data);
   });
 
 // ─── removeProjectMember ──────────────────────────────────────────────────────
 
+export async function removeProjectMemberService(userId: string, data: { id: string }) {
+  const member = await pgOne<{ id: string; project_id: string; role: string }>(
+    "SELECT id, project_id, role FROM project_members WHERE id = $1",
+    [data.id],
+  );
+  if (!member) {
+    return { ok: true };
+  }
+
+  const [admin, projectAdmin] = await Promise.all([
+    pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
+    pgOne(
+      "SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = 'project_admin'",
+      [member.project_id, userId],
+    ),
+  ]);
+  if (!admin && !projectAdmin) {
+    throw new Error("Only admins or project admins can manage project data.");
+  }
+
+  if (member.role === "project_admin") {
+    const adminCount = await pgOne<{ count: string }>(
+      "SELECT COUNT(*) as count FROM project_members WHERE project_id = $1 AND role = 'project_admin'",
+      [member.project_id],
+    );
+    if (parseInt(adminCount?.count ?? "1", 10) <= 1) {
+      throw new Error("Cannot remove the last project administrator for this project.");
+    }
+  }
+
+  await pgQuery("DELETE FROM project_members WHERE id = $1", [data.id]);
+  return { ok: true };
+}
+
 export const removeProjectMember = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
-  .handler(async ({ data }) => {
-    await pgQuery("DELETE FROM project_members WHERE id = $1", [data.id]);
-    return { ok: true };
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return removeProjectMemberService(context.userId, data);
   });
+
+
 
 // ─── deleteProject & deletion approvals ──────────────────────────────────────
 
@@ -1668,6 +1758,18 @@ export async function getAdrService(userId: string, data: { id: string }) {
     if (!adr) throw new Error("ADR not found");
     assertDraftAdrOwner(adr, userId);
 
+    const [admin, membership] = await Promise.all([
+      pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
+      pgOne("SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2", [
+        userId,
+        adr.project_id,
+      ]),
+    ]);
+    if (!admin && !membership) {
+      throw new Error("Unauthorized: You do not have access to this ADR's project.");
+    }
+
+
     // Shape to match nested format
     const shaped = {
       ...adr,
@@ -2009,12 +2111,24 @@ export const updateAdrStatus = createServerFn({ method: "POST" })
     const context = ctx(rawCtx);
     const { userId } = context;
 
-    const adr = await pgOne<{ status: string; author_id: string }>(
-      "SELECT status, author_id FROM adrs WHERE id = $1",
+    const adr = await pgOne<{ status: string; author_id: string; project_id: string }>(
+      "SELECT status, author_id, project_id FROM adrs WHERE id = $1",
       [data.id],
     );
     if (!adr) throw new Error("ADR not found.");
     assertDraftAdrOwner(adr, userId);
+
+    const [admin, membership] = await Promise.all([
+      pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
+      pgOne("SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2", [
+        userId,
+        adr.project_id,
+      ]),
+    ]);
+    if (!admin && !membership) {
+      throw new Error("Unauthorized: You do not have access to this ADR's project.");
+    }
+
 
     if (data.status === "approved") {
       const adminApproveRow = await pgOne(
@@ -4186,8 +4300,17 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
 // ─── getProjectForGraph ───────────────────────────────────────────────────────
 
 export async function getProjectForGraphService(userId: string, data: { project_id: string }) {
+  const [isAdmin, isMember] = await Promise.all([
+    pgOne("SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'", [userId]),
+    pgOne("SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2", [userId, data.project_id]),
+  ]);
+  if (!isAdmin && !isMember) {
+    throw new Error("Unauthorized: You do not have access to this project.");
+  }
+
   const [adrsRow, relsRow, projectRow] = await Promise.all([
     pgQuery(
+
       `SELECT DISTINCT a.id, a.full_id, a.title, a.status, a.current_version, a.repository_path
        FROM adrs a
        WHERE (a.status <> 'draft' OR a.author_id = $2)

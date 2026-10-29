@@ -51,6 +51,23 @@ export const requireAuth = createMiddleware({ type: 'function' }).server(
         throw new Error('No user ID found in token');
       }
 
+      // Check account lock status in database
+      try {
+        const { queryOne } = await import('@/integrations/database/postgres');
+        const profile = await queryOne<{ is_locked: boolean | null }>(
+          'SELECT is_locked FROM public.profiles WHERE id = $1',
+          [userId]
+        );
+        if (profile?.is_locked) {
+          throw new Error('Unauthorized: Account has been locked by an administrator');
+        }
+      } catch (err: any) {
+        if (err?.message?.includes('locked by an administrator')) {
+          throw err;
+        }
+        // If database is not ready or in mock mode, proceed with verified JWT
+      }
+
       const ctx: AuthContext = {
         userId,
         claims: payload,
@@ -60,8 +77,9 @@ export const requireAuth = createMiddleware({ type: 'function' }).server(
       return next({ context: ctx });
     } catch (error: any) {
       console.error('Token validation failed:', error?.message ?? error);
-      throw new Error('Unauthorized: Invalid token');
+      throw new Error(error?.message?.startsWith('Unauthorized:') ? error.message : 'Unauthorized: Invalid token');
     }
+
   }
 );
 

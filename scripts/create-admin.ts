@@ -13,10 +13,39 @@ import { createLocalUser } from '../src/integrations/database/local-auth.server.
 import { closePool } from '../src/integrations/database/postgres.ts';
 import { runMigrations } from '../src/integrations/database/migrate.ts';
 
-const email = process.env.ADMIN_EMAIL || 'decyra_admin';
-const password = process.env.ADMIN_PASSWORD || 'admin1234';
+import { randomBytes } from 'crypto';
+
+const isProduction = process.env.NODE_ENV === 'production';
+const email = process.env.ADMIN_EMAIL || (isProduction ? '' : 'decyra_admin');
+
+let password = process.env.ADMIN_PASSWORD || '';
+let generatedPassword = false;
+
+if (isProduction) {
+  if (!email) {
+    console.error('❌ FATAL: ADMIN_EMAIL must be explicitly provided in production mode.');
+    process.exit(1);
+  }
+  if (password === 'admin1234') {
+    console.error('❌ FATAL: Default password "admin1234" is forbidden in production mode. Set a strong ADMIN_PASSWORD.');
+    process.exit(1);
+  }
+  if (!password) {
+    // Generate a secure high-entropy random password for first-run bootstrap
+    password = randomBytes(16).toString('base64url');
+    generatedPassword = true;
+  } else if (password.length < 12) {
+    console.error('❌ FATAL: ADMIN_PASSWORD must be at least 12 characters in production mode.');
+    process.exit(1);
+  }
+} else {
+  // Local development defaults
+  password = password || 'admin1234';
+}
+
 const fullName = process.env.ADMIN_NAME || 'Platform Admin';
 const username = process.env.ADMIN_USERNAME || (email.includes('@') ? email.split('@')[0] : email);
+
 
 async function main() {
   console.log('🔄 Ensuring database is migrated...');
@@ -38,7 +67,13 @@ async function main() {
     }
     console.log(`\n🚀 You can now log in at http://localhost:3000/auth`);
     console.log(`   Email/Username: ${user.username || email}`);
-    console.log(`   Password      : (the one you set)`);
+    if (generatedPassword) {
+      console.log(`   Generated Password: ${password}`);
+      console.log('   ⚠️  Keep this password safe and change it upon first login.');
+    } else {
+      console.log(`   Password      : (the one you set)`);
+    }
+
   } catch (err: any) {
     if (err.message?.includes('already exists')) {
       console.log('ℹ️  A user with that email already exists.');

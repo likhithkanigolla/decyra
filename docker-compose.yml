@@ -63,7 +63,7 @@ services:
         -c synchronous_commit=off
 
     ports:
-      - "17053:5432"
+      - "127.0.0.1:17053:5432"
 
     volumes:
       - postgres_data:/var/lib/postgresql

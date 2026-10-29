@@ -37,8 +37,11 @@ COPY package.json package-lock.json ./
 RUN npm install --omit=dev
 
 # Copy built assets and necessary runtime files
-COPY --from=builder /app/.output ./.output
-COPY --from=builder /app/migrations ./migrations
+COPY --from=builder --chown=node:node /app/.output ./.output
+COPY --from=builder --chown=node:node /app/migrations ./migrations
+
+# Ensure app directory permissions for node user
+RUN chown -R node:node /app
 
 # Set environment variables
 ENV NODE_ENV=production
@@ -47,6 +50,9 @@ ENV PORT=3000
 
 # Expose the application port
 EXPOSE 3000
+
+# Drop root privileges
+USER node
 
 # Start the application (run admin creation first, then start server)
 CMD ["sh", "-c", "node .output/create-admin.mjs && node .output/server/index.mjs"]

@@ -23,6 +23,51 @@ interface PushOptions {
   publisherUserId: string;
 }
 
+const DEFAULT_ALLOWED_GIT_HOSTS = new Set([
+  "github.com",
+  "gitlab.com",
+  "bitbucket.org",
+]);
+
+export function isAllowedGitHost(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+
+  // Explicitly disallow localhost, link-local, loopback, and private IP patterns
+  if (
+    lower === "localhost" ||
+    lower === "127.0.0.1" ||
+    lower === "::1" ||
+    lower === "0.0.0.0" ||
+    lower.startsWith("169.254.") || // Cloud metadata IP
+    lower.startsWith("10.") ||
+    lower.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(lower)
+  ) {
+    return false;
+  }
+
+  // Check default providers (direct match or subdomain, e.g. gitlab.com, myorg.gitlab.com)
+  for (const provider of DEFAULT_ALLOWED_GIT_HOSTS) {
+    if (lower === provider || lower.endsWith(`.${provider}`)) {
+      return true;
+    }
+  }
+
+  // Check configured enterprise hosts from environment
+  const configuredHosts = (process.env.GIT_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+
+  for (const host of configuredHosts) {
+    if (lower === host || lower.endsWith(`.${host}`)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Builds an authenticated HTTPS git URL with the appropriate username/password for GitHub, GitLab, etc.
  */
@@ -36,14 +81,24 @@ export function buildAuthenticatedGitUrl(rawUrl: string, token: string): string 
   }
 
   if (url.protocol === "file:") {
-    return url.pathname;
+    if (process.env.NODE_ENV === "test" || process.env.ALLOW_LOCAL_FILE_GIT === "true") {
+      return url.pathname;
+    }
+    throw new Error("Local file:// repository URLs are not allowed.");
   }
+
 
   if (url.protocol !== "https:") {
     throw new Error("Only HTTPS repository URLs are supported.");
   }
 
   const hostname = url.hostname.toLowerCase();
+  if (!isAllowedGitHost(hostname)) {
+    throw new Error(
+      `Repository host "${hostname}" is not allowed. Only approved Git providers or hosts configured in GIT_ALLOWED_HOSTS are supported.`
+    );
+  }
+
   if (hostname === "github.com" || hostname.endsWith(".github.com")) {
     url.username = "x-access-token";
   } else if (hostname === "gitlab.com" || hostname.endsWith(".gitlab.com")) {
@@ -54,6 +109,7 @@ export function buildAuthenticatedGitUrl(rawUrl: string, token: string): string 
   url.password = token.trim();
   return url.toString();
 }
+
 
 export function sanitizeGitError(err: unknown, token?: string | null): Error {
   const msg = err instanceof Error ? err.message : String(err);

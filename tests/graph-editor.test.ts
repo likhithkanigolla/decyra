@@ -133,8 +133,12 @@ describe("Graph Viewer & Editor Backend Services", () => {
         if (sql.includes("SELECT graph_layout FROM projects WHERE id = $1")) {
           return { graph_layout: mockLayout };
         }
+        if (sql.includes("FROM project_members WHERE user_id = $1 AND project_id = $2")) {
+          return { role: "engineer" };
+        }
         return null;
       });
+
 
       const res = await getProjectForGraphService(memberUserId, { project_id: projectId });
 

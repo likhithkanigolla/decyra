@@ -9,8 +9,36 @@
 import { randomBytes, pbkdf2, createHmac, timingSafeEqual } from 'crypto';
 import { query, queryOne } from './postgres';
 
-const JWT_SECRET = process.env.POSTGRES_JWT_SECRET || 'local-dev-jwt-secret-change-in-production';
+const DEV_FALLBACK_JWT_SECRET = 'local-dev-jwt-secret-change-in-production';
 const TOKEN_EXPIRY_SECONDS = 60 * 60 * 24 * 7; // 7 days
+
+export function getJwtSecret(): string {
+  const secret = process.env.POSTGRES_JWT_SECRET?.trim();
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (!secret) {
+    if (isProduction) {
+      throw new Error(
+        'FATAL: POSTGRES_JWT_SECRET environment variable must be set in production mode.'
+      );
+    }
+    return DEV_FALLBACK_JWT_SECRET;
+  }
+
+  if (isProduction && secret === DEV_FALLBACK_JWT_SECRET) {
+    throw new Error(
+      'FATAL: Insecure default POSTGRES_JWT_SECRET detected in production. You must configure a unique secret.'
+    );
+  }
+
+  if (isProduction && secret.length < 32) {
+    throw new Error(
+      'FATAL: POSTGRES_JWT_SECRET must be at least 32 characters in production.'
+    );
+  }
+
+  return secret;
+}
 
 // ─── Password Hashing ────────────────────────────────────────────────────────
 
@@ -50,10 +78,11 @@ function b64url(data: string | Buffer): string {
 }
 
 export function signJwt(payload: Record<string, unknown>): string {
+  const secret = getJwtSecret();
   const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const now = Math.floor(Date.now() / 1000);
   const body = b64url(JSON.stringify({ iat: now, exp: now + TOKEN_EXPIRY_SECONDS, ...payload }));
-  const sig = createHmac('sha256', JWT_SECRET)
+  const sig = createHmac('sha256', secret)
     .update(`${header}.${body}`)
     .digest('base64url');
   return `${header}.${body}.${sig}`;
@@ -61,12 +90,19 @@ export function signJwt(payload: Record<string, unknown>): string {
 
 export function verifyJwt(token: string): Record<string, unknown> | null {
   try {
+    const secret = getJwtSecret();
     const [header, body, sig] = token.split('.');
     if (!header || !body || !sig) return null;
-    const expected = createHmac('sha256', JWT_SECRET)
+    const expected = createHmac('sha256', secret)
       .update(`${header}.${body}`)
       .digest('base64url');
-    if (expected !== sig) return null;
+
+    const expectedBuf = Buffer.from(expected);
+    const sigBuf = Buffer.from(sig);
+    if (expectedBuf.length !== sigBuf.length || !timingSafeEqual(expectedBuf, sigBuf)) {
+      return null;
+    }
+
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
     if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
     return payload;
@@ -74,6 +110,7 @@ export function verifyJwt(token: string): Record<string, unknown> | null {
     return null;
   }
 }
+
 
 // ─── User Types ──────────────────────────────────────────────────────────────
 

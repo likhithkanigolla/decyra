@@ -56,8 +56,15 @@ describe("ADR Navigation Services", () => {
           updated_at: new Date().toISOString(),
         };
       }
+      if (sql.includes("FROM project_members WHERE user_id = $1 AND project_id = $2")) {
+        return { role: "project_admin" };
+      }
+      if (sql.includes("FROM user_roles WHERE user_id = $1 AND role = 'admin'")) {
+        return { role: "admin" };
+      }
       return null;
     });
+
 
     vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
       if (sql.includes("FROM adrs a WHERE a.project_id = $1")) {
