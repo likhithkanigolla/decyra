@@ -1,6 +1,7 @@
 services:
 
   app:
+    image: likhithkanigolla/decyra:latest
     build: .
     container_name: decyra_app
 
