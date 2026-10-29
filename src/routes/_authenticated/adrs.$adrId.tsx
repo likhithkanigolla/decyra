@@ -230,6 +230,7 @@ function AdrDetail() {
       toast.success(decision === "approve" ? "Approved!" : "Rejected");
       setApprovalNote("");
       qc.invalidateQueries({ queryKey: ["adr", adrId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
     } catch (err: any) { toast.error(getErrorMessage(err, "Failed to submit review")); }
     finally { setBusy(""); }
   }

@@ -2957,11 +2957,7 @@ export const markNotificationRead = createServerFn({ method: "POST" })
 
 // ─── dashboardStats ───────────────────────────────────────────────────────────
 
-export const dashboardStats = createServerFn({ method: "POST" })
-  .middleware([requireFlexibleAuth])
-  .handler(async ({ context: rawCtx }) => {
-    const context = ctx(rawCtx);
-    const { userId } = context;
+export async function dashboardStatsService(userId: string) {
 
     const isAdminRow = await pgOne(
       "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
@@ -3017,6 +3013,7 @@ export const dashboardStats = createServerFn({ method: "POST" })
            FROM adrs a
            JOIN projects p ON p.id = a.project_id
            WHERE a.status = 'under_review'
+             AND a.author_id <> $1
              AND (
                $2 = true OR EXISTS (
                  SELECT 1 FROM project_members pm
@@ -3025,7 +3022,7 @@ export const dashboardStats = createServerFn({ method: "POST" })
              )
              AND NOT EXISTS (
                SELECT 1 FROM approvals ap
-               WHERE ap.adr_id = a.id AND ap.user_id = $1 AND ap.decision = 'approve'
+               WHERE ap.adr_id = a.id AND ap.user_id = $1
              )
            ORDER BY (a.assigned_to = $1) DESC, a.updated_at DESC
            LIMIT 10`,
@@ -3098,6 +3095,13 @@ export const dashboardStats = createServerFn({ method: "POST" })
       resolvedCommentsCount: Number(resolvedCountRow?.count ?? 0),
       unreadNotificationsCount: Number(unreadNotificationsRow?.count ?? 0),
     };
+  }
+
+export const dashboardStats = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .handler(async ({ context: rawCtx }) => {
+    const context = ctx(rawCtx);
+    return dashboardStatsService(context.userId);
   });
 
 // ─── updateUser (admin: edit role / name / username) ──────────────────────────
