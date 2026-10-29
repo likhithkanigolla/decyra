@@ -155,6 +155,153 @@ describe("ADR Timeline & Edit History Tracking", () => {
       expect(changes.previous_status).toBe("approved");
       expect(changes.next_status).toBe("under_review");
     });
+
+    it("does not create edited timeline event or revoke approvals when content has not changed", async () => {
+      const timelineEvents: Array<{ sql: string; params: unknown[] }> = [];
+      let deletedApprovals = false;
+
+      vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+        if (sql.includes("FROM adrs WHERE id = $1")) {
+          return {
+            status: "draft",
+            project_id: projectId,
+            author_id: userId,
+            title: "Original Title",
+            context: "Original Context\n",
+            decision: "Original Decision",
+            consequences: "Original Consequences",
+            tags: ["v1"],
+            alternatives: null,
+            design_changes: null,
+            major_impacts: null,
+            references_data: null,
+          };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role='admin'")) {
+          return { 1: 1 };
+        }
+        return null;
+      });
+
+      vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
+        if (sql.includes("INSERT INTO adr_timeline_events")) {
+          timelineEvents.push({ sql, params: params ?? [] });
+        }
+        if (sql.includes("DELETE FROM approvals")) {
+          deletedApprovals = true;
+        }
+        return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
+      });
+
+      // User submits the form where unchanged fields submit empty default objects and nulls
+      const res = await updateAdrService(userId, {
+        id: adrId,
+        title: "Original Title",
+        context: "Original Context\r\n",
+        decision: "Original Decision",
+        consequences: "Original Consequences",
+        alternatives: "",
+        tags: ["v1"],
+        design_changes: {
+          api_changes: "",
+          workflow_changes: "",
+          service_changes: "",
+          infrastructure_changes: "",
+          data_model_changes: "",
+        },
+        major_impacts: {
+          operational: "",
+          testing: "",
+          security: "",
+          documentation: "",
+          scalability: "",
+        },
+        references_data: {
+          pull_requests: [],
+          git_commits: [],
+          design_docs: [],
+          wiki_pages: [],
+          external: [],
+        },
+      });
+
+      expect(res.ok).toBe(true);
+      expect(timelineEvents).toHaveLength(0);
+      expect(deletedApprovals).toBe(false);
+    });
+
+    it("only marks the truly modified section without assigning empty sections", async () => {
+      const timelineEvents: Array<{ sql: string; params: unknown[] }> = [];
+
+      vi.spyOn(postgres, "queryOne").mockImplementation(async (sql) => {
+        if (sql.includes("FROM adrs WHERE id = $1")) {
+          return {
+            status: "draft",
+            project_id: projectId,
+            author_id: userId,
+            title: "Original Title",
+            context: "Original Context",
+            decision: "Original Decision",
+            consequences: "Original Consequences",
+            tags: ["v1"],
+            alternatives: null,
+            design_changes: null,
+            major_impacts: null,
+            references_data: null,
+          };
+        }
+        if (sql.includes("FROM user_roles WHERE user_id = $1 AND role='admin'")) {
+          return { 1: 1 };
+        }
+        return null;
+      });
+
+      vi.spyOn(postgres, "query").mockImplementation(async (sql, params) => {
+        if (sql.includes("INSERT INTO adr_timeline_events")) {
+          timelineEvents.push({ sql, params: params ?? [] });
+        }
+        return { rows: [] } as unknown as QueryResult<Record<string, unknown>>;
+      });
+
+      // User ONLY changed Decision
+      const res = await updateAdrService(userId, {
+        id: adrId,
+        title: "Original Title",
+        context: "Original Context",
+        decision: "Updated Decision with new caching layer",
+        consequences: "Original Consequences",
+        alternatives: "",
+        tags: ["v1"],
+        design_changes: {
+          api_changes: "",
+          workflow_changes: "",
+          service_changes: "",
+          infrastructure_changes: "",
+          data_model_changes: "",
+        },
+        major_impacts: {
+          operational: "",
+          testing: "",
+          security: "",
+          documentation: "",
+          scalability: "",
+        },
+        references_data: {
+          pull_requests: [],
+          git_commits: [],
+          design_docs: [],
+          wiki_pages: [],
+          external: [],
+        },
+      });
+
+      expect(res.ok).toBe(true);
+      expect(timelineEvents).toHaveLength(1);
+      const changes = JSON.parse(timelineEvents[0].params[4] as string);
+      // MUST ONLY be Decision! No false "Design Changes", "Major Impacts", "References", "Alternatives"
+      expect(changes.changed_fields).toEqual(["Decision"]);
+      expect(timelineEvents[0].params[3]).toBe("Edited Decision");
+    });
   });
 
   describe("assignAdrReviewerService timeline tracking", () => {

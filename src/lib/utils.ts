@@ -103,3 +103,123 @@ export function validateOverrideRationale(comment: string): { valid: boolean; er
 
   return { valid: true };
 }
+
+export function normalizeAdrText(val: unknown): string {
+  if (val == null) return "";
+  return String(val).replace(/\r\n/g, "\n").trim();
+}
+
+export function normalizeAdrTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  return tags
+    .map((t) => (t == null ? "" : String(t).trim()))
+    .filter(Boolean)
+    .sort();
+}
+
+export function normalizeAdrRecordStrings(obj: unknown): Record<string, string> {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return {};
+  const result: Record<string, string> = {};
+  const sortedKeys = Object.keys(obj as Record<string, unknown>).sort();
+  for (const key of sortedKeys) {
+    const val = (obj as Record<string, unknown>)[key];
+    const cleaned = typeof val === "string" ? val.replace(/\r\n/g, "\n").trim() : "";
+    if (cleaned) {
+      result[key] = cleaned;
+    }
+  }
+  return result;
+}
+
+export function normalizeAdrReferences(refs: unknown): Record<string, string[]> {
+  if (!refs || typeof refs !== "object" || Array.isArray(refs)) return {};
+  const result: Record<string, string[]> = {};
+  const sortedKeys = Object.keys(refs as Record<string, unknown>).sort();
+  for (const key of sortedKeys) {
+    const val = (refs as Record<string, unknown>)[key];
+    if (Array.isArray(val)) {
+      const cleaned = val
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean)
+        .sort();
+      if (cleaned.length > 0) {
+        result[key] = cleaned;
+      }
+    }
+  }
+  return result;
+}
+
+export function detectChangedAdrFields(
+  incoming: {
+    title?: string;
+    context?: string;
+    decision?: string;
+    consequences?: string;
+    alternatives?: string;
+    tags?: string[];
+    design_changes?: any;
+    major_impacts?: any;
+    references_data?: any;
+  },
+  existing: {
+    title?: string;
+    context?: string;
+    decision?: string;
+    consequences?: string;
+    alternatives?: string;
+    tags?: string[];
+    design_changes?: any;
+    major_impacts?: any;
+    references_data?: any;
+  }
+): string[] {
+  const changed: string[] = [];
+
+  if (incoming.title !== undefined && normalizeAdrText(incoming.title) !== normalizeAdrText(existing.title)) {
+    changed.push("Title");
+  }
+  if (incoming.context !== undefined && normalizeAdrText(incoming.context) !== normalizeAdrText(existing.context)) {
+    changed.push("Context");
+  }
+  if (incoming.decision !== undefined && normalizeAdrText(incoming.decision) !== normalizeAdrText(existing.decision)) {
+    changed.push("Decision");
+  }
+  if (incoming.consequences !== undefined && normalizeAdrText(incoming.consequences) !== normalizeAdrText(existing.consequences)) {
+    changed.push("Consequences");
+  }
+  if (incoming.alternatives !== undefined && normalizeAdrText(incoming.alternatives) !== normalizeAdrText(existing.alternatives)) {
+    changed.push("Alternatives");
+  }
+  if (incoming.tags !== undefined) {
+    const incTags = JSON.stringify(normalizeAdrTags(incoming.tags));
+    const exTags = JSON.stringify(normalizeAdrTags(existing.tags));
+    if (incTags !== exTags) {
+      changed.push("Tags");
+    }
+  }
+  if (incoming.design_changes !== undefined) {
+    const incDC = JSON.stringify(normalizeAdrRecordStrings(incoming.design_changes));
+    const exDC = JSON.stringify(normalizeAdrRecordStrings(existing.design_changes));
+    if (incDC !== exDC) {
+      changed.push("Design Changes");
+    }
+  }
+  if (incoming.major_impacts !== undefined) {
+    const incMI = JSON.stringify(normalizeAdrRecordStrings(incoming.major_impacts));
+    const exMI = JSON.stringify(normalizeAdrRecordStrings(existing.major_impacts));
+    if (incMI !== exMI) {
+      changed.push("Major Impacts");
+    }
+  }
+  if (incoming.references_data !== undefined) {
+    const incRef = JSON.stringify(normalizeAdrReferences(incoming.references_data));
+    const exRef = JSON.stringify(normalizeAdrReferences(existing.references_data));
+    if (incRef !== exRef) {
+      changed.push("References");
+    }
+  }
+
+  return changed;
+}
+

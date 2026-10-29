@@ -5,7 +5,7 @@ import { z } from "zod";
 import { randomBytes } from "node:crypto";
 import { parseAdrMarkdown, extractAdrIdentifier, inspectAdrIdentifier } from "@/lib/adr-markdown";
 import { getDatabaseConfig } from "@/integrations/database/config";
-import { validateOverrideRationale } from "@/lib/utils";
+import { validateOverrideRationale, detectChangedAdrFields } from "@/lib/utils";
 import * as Y from "yjs";
 
 // Helper: cast middleware context to the correct type
@@ -3376,16 +3376,7 @@ export async function updateAdrService(userId: string, data: z.infer<typeof adrF
     consequences: data.consequences ?? adr.consequences,
   });
 
-  const changedFields: string[] = [];
-  if (data.title !== undefined && data.title !== adr.title) changedFields.push("Title");
-  if (data.context !== undefined && data.context !== adr.context) changedFields.push("Context");
-  if (data.decision !== undefined && data.decision !== adr.decision) changedFields.push("Decision");
-  if (data.consequences !== undefined && data.consequences !== adr.consequences) changedFields.push("Consequences");
-  if (data.alternatives !== undefined && data.alternatives !== adr.alternatives) changedFields.push("Alternatives");
-  if (data.tags !== undefined && JSON.stringify(data.tags ?? []) !== JSON.stringify(adr.tags ?? [])) changedFields.push("Tags");
-  if (data.design_changes !== undefined && JSON.stringify(data.design_changes ?? {}) !== JSON.stringify(adr.design_changes ?? {})) changedFields.push("Design Changes");
-  if (data.major_impacts !== undefined && JSON.stringify(data.major_impacts ?? {}) !== JSON.stringify(adr.major_impacts ?? {})) changedFields.push("Major Impacts");
-  if (data.references_data !== undefined && JSON.stringify(data.references_data ?? {}) !== JSON.stringify(adr.references_data ?? {})) changedFields.push("References");
+  const changedFields = detectChangedAdrFields(data, adr);
 
   const fields: string[] = [];
   const vals: any[] = [];
@@ -3415,19 +3406,23 @@ export async function updateAdrService(userId: string, data: z.infer<typeof adrF
     fields.push(`status = $${p++}`);
     vals.push("draft");
     nextStatus = "draft";
-  } else if (adr.status === "approved") {
+  } else if (adr.status === "approved" && changedFields.length > 0) {
     fields.push(`status = $${p++}`);
     vals.push("under_review");
     nextStatus = "under_review";
   }
 
-  if (!fields.length) return { ok: true, nextStatus: null };
+  if (!fields.length || (changedFields.length === 0 && !nextStatus)) {
+    return { ok: true, nextStatus: null };
+  }
   vals.push(data.id);
   await pgQuery(`UPDATE adrs SET ${fields.join(", ")} WHERE id = $${p}`, vals);
 
-  // Revoke approvals because the ADR content was edited/updated,
+  // Revoke approvals ONLY when the ADR content was genuinely changed,
   // allowing reviewers to re-verify the new edits and approve again.
-  await pgQuery("DELETE FROM approvals WHERE adr_id = $1 AND decision = 'approve'", [data.id]);
+  if (changedFields.length > 0) {
+    await pgQuery("DELETE FROM approvals WHERE adr_id = $1 AND decision = 'approve'", [data.id]);
+  }
 
   if (changedFields.length > 0) {
     const summary =

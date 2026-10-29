@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { cn, getErrorMessage, validateOverrideRationale } from "@/lib/utils";
+import {
+  cn,
+  getErrorMessage,
+  validateOverrideRationale,
+  detectChangedAdrFields,
+  normalizeAdrText,
+  normalizeAdrTags,
+  normalizeAdrRecordStrings,
+  normalizeAdrReferences,
+} from "@/lib/utils";
 
 describe("utils", () => {
   describe("cn", () => {
@@ -121,6 +130,141 @@ describe("utils", () => {
       const res = validateOverrideRationale(valid);
       expect(res.valid).toBe(true);
       expect(res.error).toBeUndefined();
+    });
+  });
+
+  describe("detectChangedAdrFields", () => {
+    it("returns empty array when form submits default empty objects against null or empty DB records", () => {
+      const incoming = {
+        title: "Same Title",
+        context: "Same Context\r\n",
+        decision: "Same Decision",
+        consequences: "Same Consequences",
+        alternatives: "",
+        tags: [],
+        design_changes: {
+          api_changes: "",
+          workflow_changes: "",
+          service_changes: "",
+          infrastructure_changes: "",
+          data_model_changes: "",
+        },
+        major_impacts: {
+          operational: "",
+          testing: "",
+          security: "",
+          documentation: "",
+          scalability: "",
+        },
+        references_data: {
+          pull_requests: [],
+          git_commits: [],
+          design_docs: [],
+          wiki_pages: [],
+          external: [],
+        },
+      };
+
+      const existing = {
+        title: "Same Title",
+        context: "Same Context\n",
+        decision: "Same Decision",
+        consequences: "Same Consequences",
+        alternatives: null as any,
+        tags: null as any,
+        design_changes: null as any,
+        major_impacts: {},
+        references_data: null as any,
+      };
+
+      const changed = detectChangedAdrFields(incoming, existing);
+      expect(changed).toEqual([]);
+    });
+
+    it("detects only the specific field that was actually modified", () => {
+      const incoming = {
+        title: "Brand New Title",
+        context: "Same Context",
+        decision: "Same Decision",
+        consequences: "Same Consequences",
+        alternatives: "",
+        tags: ["architecture"],
+        design_changes: {
+          api_changes: "",
+          workflow_changes: "",
+          service_changes: "",
+          infrastructure_changes: "",
+          data_model_changes: "",
+        },
+        major_impacts: {
+          operational: "",
+          testing: "",
+          security: "",
+          documentation: "",
+          scalability: "",
+        },
+        references_data: {
+          pull_requests: [],
+          git_commits: [],
+          design_docs: [],
+          wiki_pages: [],
+          external: [],
+        },
+      };
+
+      const existing = {
+        title: "Old Title",
+        context: "Same Context",
+        decision: "Same Decision",
+        consequences: "Same Consequences",
+        alternatives: null as any,
+        tags: ["architecture"],
+        design_changes: {},
+        major_impacts: {},
+        references_data: {},
+      };
+
+      const changed = detectChangedAdrFields(incoming, existing);
+      expect(changed).toEqual(["Title"]);
+    });
+
+    it("detects when design changes, major impacts, or references are genuinely modified", () => {
+      const incoming = {
+        design_changes: {
+          api_changes: "Added /api/v2 endpoint",
+          workflow_changes: "",
+        },
+        major_impacts: {
+          operational: "Requires Redis sentinel cluster",
+        },
+        references_data: {
+          pull_requests: ["#101"],
+        },
+      };
+
+      const existing = {
+        design_changes: {},
+        major_impacts: null,
+        references_data: { pull_requests: [] },
+      };
+
+      const changed = detectChangedAdrFields(incoming, existing);
+      expect(changed).toEqual(["Design Changes", "Major Impacts", "References"]);
+    });
+
+    it("ignores whitespace differences and tag ordering differences", () => {
+      const incoming = {
+        title: "  Architecture Overview  ",
+        tags: ["beta", "alpha"],
+      };
+
+      const existing = {
+        title: "Architecture Overview",
+        tags: ["alpha", "beta"],
+      };
+
+      const changed = detectChangedAdrFields(incoming, existing);
+      expect(changed).toEqual([]);
     });
   });
 });
