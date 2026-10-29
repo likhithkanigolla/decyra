@@ -258,6 +258,20 @@ async function insertAdr(
     ],
   );
   if (!inserted) throw new Error(`Could not import repository ADR at ${repositoryPath}.`);
+  try {
+    await localQuery(
+      `INSERT INTO adr_timeline_events (adr_id, user_id, event_type, summary, changes)
+       VALUES ($1, $2, 'created', $3, $4::jsonb)`,
+      [
+        inserted.id,
+        authorId,
+        `Imported ADR from repository (${repositoryPath})`,
+        JSON.stringify({ repository_path: repositoryPath, initial_status: "under_review" }),
+      ],
+    );
+  } catch {
+    // Ignore if table does not exist or logging fails
+  }
   return inserted.id;
 }
 
@@ -307,6 +321,23 @@ async function updateTrackedAdr(
   );
   if (contentChanged) {
     await localQuery("DELETE FROM approvals WHERE adr_id = $1 AND decision = 'approve'", [adr.id]);
+    try {
+      await localQuery(
+        `INSERT INTO adr_timeline_events (adr_id, user_id, event_type, summary, changes)
+         VALUES ($1, NULL, 'git_synced', $2, $3::jsonb)`,
+        [
+          adr.id,
+          `Synchronized changes from repository path ${repositoryPath}`,
+          JSON.stringify({
+            repository_path: repositoryPath,
+            previous_status: adr.status,
+            next_status: nextStatus,
+          }),
+        ],
+      );
+    } catch {
+      // Ignore if table does not exist or logging fails
+    }
   }
 }
 
@@ -405,7 +436,7 @@ async function syncRepository(project: GitHubSyncProject, after: string) {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
       },
-    });
+    } as any);
     await git.clone(cloneUrl(project), tempDirectory, ["--branch", branch, "--depth", "1"]);
     const repositoryGit = simpleGit({
       baseDir: tempDirectory,
@@ -413,7 +444,7 @@ async function syncRepository(project: GitHubSyncProject, after: string) {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
       },
-    });
+    } as any);
     const head = (await repositoryGit.revparse(["HEAD"])).trim();
     if (head.toLowerCase() !== after.toLowerCase()) {
       return { synced: false, reason: "stale-push" as const };

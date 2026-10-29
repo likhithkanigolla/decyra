@@ -8,6 +8,10 @@ export function generateAdrMarkdown(adr: {
   full_id?: string;
   status?: string;
   tags?: string[];
+  context?: string;
+  decision?: string;
+  consequences?: string;
+  alternatives?: string;
   design_changes?: Record<string, string>;
   major_impacts?: Record<string, string>;
   references_data?: Record<string, string[]>;
@@ -18,7 +22,7 @@ export function generateAdrMarkdown(adr: {
   const refs = adr.references_data ?? {};
   const date = new Date().toISOString().split("T")[0];
 
-  const section = (title: string, body: string) =>
+  const section = (title: string, body?: string) =>
     body?.trim() ? `\n## ${title}\n\n${body.trim()}\n` : "";
 
   const subsection = (title: string, body: string) =>
@@ -210,10 +214,13 @@ export function parseAdrMarkdown(markdown: string) {
         wiki_pages: [],
         external: [],
       },
+      status: undefined,
     };
   }
 
   const titleMatch = content.match(/^#\s+(.+?)\s*$/m);
+  const statusMatch = content.match(/\*\*Status:\*\*\s*([^\n]+)/i);
+  const status = statusMatch?.[1]?.trim() ?? undefined;
   const tagsMatch = content.match(/\*\*Tags:\*\*\s*([^\n]+)/i);
   const tags = (tagsMatch?.[1] ?? "")
     .split(",")
@@ -247,6 +254,7 @@ export function parseAdrMarkdown(markdown: string) {
           "",
         )
         ?.trim() ?? "",
+    status,
     tags,
     context: extractMarkdownSection(content, "Context"),
     decision: extractMarkdownSection(content, "Decision"),

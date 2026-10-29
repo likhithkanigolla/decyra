@@ -1518,8 +1518,43 @@ export const generateDemoAdrFn = createServerFn({ method: "POST" })
         JSON.stringify(demoAdr.references_data),
       ],
     );
+    if (inserted?.id) {
+      await recordAdrTimelineEvent({
+        adr_id: inserted.id,
+        user_id: userId,
+        event_type: "created",
+        summary: "Created this ADR",
+        changes: { initial_status: demoAdr.status },
+      });
+    }
     return inserted;
   });
+
+// ─── recordAdrTimelineEvent ───────────────────────────────────────────────────
+
+export async function recordAdrTimelineEvent(params: {
+  adr_id: string;
+  user_id?: string | null;
+  event_type: string;
+  summary: string;
+  changes?: Record<string, any> | null;
+}) {
+  try {
+    await pgQuery(
+      `INSERT INTO adr_timeline_events (adr_id, user_id, event_type, summary, changes)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        params.adr_id,
+        params.user_id ?? null,
+        params.event_type,
+        params.summary,
+        params.changes ? JSON.stringify(params.changes) : null,
+      ],
+    );
+  } catch (err) {
+    console.error("Failed to record timeline event:", err);
+  }
+}
 
 // ─── createAdr ────────────────────────────────────────────────────────────────
 
@@ -1591,6 +1626,13 @@ export const createAdr = createServerFn({ method: "POST" })
       ],
     );
     if (!adr) throw new Error("Failed to create ADR");
+    await recordAdrTimelineEvent({
+      adr_id: adr.id,
+      user_id: userId,
+      event_type: "created",
+      summary: "Created this ADR",
+      changes: { initial_status: "draft" },
+    });
     return adr;
   });
 
@@ -1634,7 +1676,7 @@ export const getAdr = createServerFn({ method: "POST" })
       },
     };
 
-    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow, membersRow] = await Promise.all([
+    const [approvalsRow, commentsRow, versionsRow, roleRow, adminRow, membersRow, timelineRow] = await Promise.all([
       pgQuery(
         `SELECT ap.*, pr.full_name, pr.email, pr.username
          FROM approvals ap LEFT JOIN profiles pr ON pr.id = ap.user_id
@@ -1669,6 +1711,12 @@ export const getAdr = createServerFn({ method: "POST" })
          ORDER BY pr.full_name ASC`,
         [adr.proj_id],
       ),
+      pgQuery(
+        `SELECT te.*, pr.full_name, pr.email, pr.username, pr.avatar_url
+         FROM adr_timeline_events te LEFT JOIN profiles pr ON pr.id = te.user_id
+         WHERE te.adr_id = $1 ORDER BY te.created_at DESC`,
+        [data.id],
+      ),
     ]);
 
     const shapeWithProfiles = (rows: any[]) =>
@@ -1679,6 +1727,51 @@ export const getAdr = createServerFn({ method: "POST" })
           ? { full_name: r.resolved_by_name, username: r.resolved_by_username }
           : null,
       }));
+
+    let timelineEvents = (timelineRow.rows ?? []).map((r: any) => ({
+      ...r,
+      profiles: { full_name: r.full_name, email: r.email, username: r.username, avatar_url: r.avatar_url },
+    }));
+
+    if (timelineEvents.length === 0) {
+      const synthetic: any[] = [];
+      for (const v of versionsRow.rows ?? []) {
+        synthetic.push({
+          id: `synth-pub-${v.id}`,
+          adr_id: data.id,
+          user_id: v.published_by,
+          event_type: "published",
+          summary: `Published version v${v.version_number}${v.git_commit_hash ? ` (${v.git_commit_hash.slice(0, 7)})` : ""}`,
+          changes: { version: v.version_number },
+          created_at: v.published_at,
+          profiles: { full_name: v.full_name, username: v.username, email: v.email },
+        });
+      }
+      for (const ap of approvalsRow.rows ?? []) {
+        synthetic.push({
+          id: `synth-app-${ap.id}`,
+          adr_id: data.id,
+          user_id: ap.user_id,
+          event_type: ap.decision === "approve" ? "approved" : "changes_requested",
+          summary: ap.decision === "approve" ? "Approved this ADR" : "Requested changes on this ADR",
+          changes: { note: ap.note },
+          created_at: ap.created_at,
+          profiles: { full_name: ap.full_name, username: ap.username, email: ap.email },
+        });
+      }
+      synthetic.push({
+        id: `synth-create-${adr.id}`,
+        adr_id: data.id,
+        user_id: adr.author_id,
+        event_type: "created",
+        summary: "Created this ADR",
+        changes: { initial_status: "draft" },
+        created_at: adr.created_at,
+        profiles: { full_name: adr.author_name, username: adr.author_username },
+      });
+      synthetic.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      timelineEvents = synthetic;
+    }
 
     const isAdmin = (adminRow.rows?.length ?? 0) > 0;
     const myRole = roleRow.rows?.[0]?.role ?? null;
@@ -1704,6 +1797,7 @@ export const getAdr = createServerFn({ method: "POST" })
       comments: shapeWithProfiles(commentsRow.rows ?? []),
       publishedVersions: shapeWithProfiles(versionsRow.rows ?? []),
       projectMembers: membersRow.rows ?? [],
+      timeline: timelineEvents,
       isAdmin,
       myRole,
       currentUserId: userId,
@@ -1882,6 +1976,13 @@ export const updateAdrStatus = createServerFn({ method: "POST" })
     }
 
     await pgQuery("UPDATE adrs SET status = $1 WHERE id = $2", [data.status, data.id]);
+    await recordAdrTimelineEvent({
+      adr_id: data.id,
+      user_id: userId,
+      event_type: "status_changed",
+      summary: `Moved status from ${adr.status.replace("_", " ")} to ${data.status.replace("_", " ")}`,
+      changes: { previous_status: adr.status, new_status: data.status },
+    });
     await publishAdrCollaborationSignal(context, data.id, "status", data.status);
     return { ok: true };
   });
@@ -1921,6 +2022,16 @@ export async function approveAdrService(
        SET decision = EXCLUDED.decision, note = EXCLUDED.note`,
     [data.adr_id, userId, data.decision, data.note ?? null],
   );
+
+  const isApprove = data.decision === "approve";
+  await recordAdrTimelineEvent({
+    adr_id: data.adr_id,
+    user_id: userId,
+    event_type: isApprove ? "approved" : "changes_requested",
+    summary: isApprove ? "Approved this ADR" : "Requested changes on this ADR",
+    changes: { decision: data.decision, note: data.note ?? null },
+  });
+
   return { ok: true };
 }
 
@@ -1954,6 +2065,16 @@ export async function revokeAdrApprovalService(userId: string, adrId: string) {
     await pgQuery("UPDATE adrs SET status = 'under_review' WHERE id = $1", [adrId]);
     statusReverted = true;
   }
+
+  await recordAdrTimelineEvent({
+    adr_id: adrId,
+    user_id: userId,
+    event_type: "approval_revoked",
+    summary: statusReverted
+      ? "Revoked approval (ADR status reverted to Under Review)"
+      : "Revoked approval",
+    changes: { status_reverted: statusReverted },
+  });
 
   return { ok: true, statusReverted };
 }
@@ -2127,6 +2248,14 @@ export async function assignAdrReviewerService(
         ],
       );
     }
+
+    await recordAdrTimelineEvent({
+      adr_id: data.adr_id,
+      user_id: userId,
+      event_type: "reviewer_assigned",
+      summary: `Assigned ${reviewerHandle} to review this ADR`,
+      changes: { reviewer_id: data.reviewer_id, reviewer_handle: reviewerHandle },
+    });
   } else {
     const timelineComment = "📋 Unassigned reviewer from this ADR.";
     await pgQuery("INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)", [
@@ -2134,6 +2263,14 @@ export async function assignAdrReviewerService(
       userId,
       timelineComment,
     ]);
+
+    await recordAdrTimelineEvent({
+      adr_id: data.adr_id,
+      user_id: userId,
+      event_type: "reviewer_assigned",
+      summary: "Unassigned reviewer from this ADR",
+      changes: { reviewer_id: null },
+    });
   }
 
   return { ok: true };
@@ -2208,6 +2345,15 @@ export async function resolveCommentService(
         ],
       );
     }
+
+    const preview = comment.body.length > 60 ? `${comment.body.slice(0, 60)}…` : comment.body;
+    await recordAdrTimelineEvent({
+      adr_id: comment.adr_id,
+      user_id: userId,
+      event_type: "comment_resolved",
+      summary: `Marked comment as resolved: "${preview}"`,
+      changes: { comment_id: data.comment_id, is_resolved: true },
+    });
   } else {
     await pgQuery(
       `UPDATE comments
@@ -2215,6 +2361,15 @@ export async function resolveCommentService(
        WHERE id = $1`,
       [data.comment_id],
     );
+
+    const preview = comment.body.length > 60 ? `${comment.body.slice(0, 60)}…` : comment.body;
+    await recordAdrTimelineEvent({
+      adr_id: comment.adr_id,
+      user_id: userId,
+      event_type: "comment_reopened",
+      summary: `Reopened comment: "${preview}"`,
+      changes: { comment_id: data.comment_id, is_resolved: false },
+    });
   }
 
   return { ok: true };
@@ -2689,7 +2844,9 @@ const adrFieldsSchema = z.object({
 export async function updateAdrService(userId: string, data: z.infer<typeof adrFieldsSchema>) {
   // Check project_member or admin
   const adr = await pgOne<any>(
-    "SELECT status, project_id, author_id, title, context, decision, consequences FROM adrs WHERE id = $1",
+    `SELECT status, project_id, author_id, title, context, decision, consequences,
+            tags, alternatives, design_changes, major_impacts, references_data
+     FROM adrs WHERE id = $1`,
     [data.id],
   );
   if (!adr) throw new Error("ADR not found");
@@ -2708,6 +2865,17 @@ export async function updateAdrService(userId: string, data: z.infer<typeof adrF
     decision: data.decision ?? adr.decision,
     consequences: data.consequences ?? adr.consequences,
   });
+
+  const changedFields: string[] = [];
+  if (data.title !== undefined && data.title !== adr.title) changedFields.push("Title");
+  if (data.context !== undefined && data.context !== adr.context) changedFields.push("Context");
+  if (data.decision !== undefined && data.decision !== adr.decision) changedFields.push("Decision");
+  if (data.consequences !== undefined && data.consequences !== adr.consequences) changedFields.push("Consequences");
+  if (data.alternatives !== undefined && data.alternatives !== adr.alternatives) changedFields.push("Alternatives");
+  if (data.tags !== undefined && JSON.stringify(data.tags ?? []) !== JSON.stringify(adr.tags ?? [])) changedFields.push("Tags");
+  if (data.design_changes !== undefined && JSON.stringify(data.design_changes ?? {}) !== JSON.stringify(adr.design_changes ?? {})) changedFields.push("Design Changes");
+  if (data.major_impacts !== undefined && JSON.stringify(data.major_impacts ?? {}) !== JSON.stringify(adr.major_impacts ?? {})) changedFields.push("Major Impacts");
+  if (data.references_data !== undefined && JSON.stringify(data.references_data ?? {}) !== JSON.stringify(adr.references_data ?? {})) changedFields.push("References");
 
   const fields: string[] = [];
   const vals: any[] = [];
@@ -2750,6 +2918,25 @@ export async function updateAdrService(userId: string, data: z.infer<typeof adrF
   // Revoke approvals because the ADR content was edited/updated,
   // allowing reviewers to re-verify the new edits and approve again.
   await pgQuery("DELETE FROM approvals WHERE adr_id = $1 AND decision = 'approve'", [data.id]);
+
+  if (changedFields.length > 0) {
+    const summary =
+      nextStatus && nextStatus !== adr.status
+        ? `Edited ${changedFields.join(", ")} (status moved to ${nextStatus.replace("_", " ")})`
+        : `Edited ${changedFields.join(", ")}`;
+
+    await recordAdrTimelineEvent({
+      adr_id: data.id,
+      user_id: userId,
+      event_type: "edited",
+      summary,
+      changes: {
+        changed_fields: changedFields,
+        previous_status: adr.status,
+        next_status: nextStatus ?? adr.status,
+      },
+    });
+  }
 
   return { ok: true, nextStatus };
 }
@@ -2945,6 +3132,83 @@ export const removeAdrRelationship = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// ─── updateAdrRelationship ────────────────────────────────────────────────────
+
+export async function updateAdrRelationshipService(
+  userId: string,
+  data: {
+    id: string;
+    rel_type: "depends_on" | "related_to" | "supersedes" | "superseded_by" | "conflicts_with" | "affects";
+    source_adr_id?: string;
+    target_adr_id?: string;
+  },
+  context?: AuthContext,
+) {
+  const relationship = await pgOne<{ source_adr_id: string; target_adr_id: string }>(
+    "SELECT source_adr_id, target_adr_id FROM adr_relationships WHERE id = $1",
+    [data.id],
+  );
+  if (!relationship) throw new Error("Relationship not found");
+  if (context) {
+    await Promise.all([
+      assertAdrCollaborationAccess(context, relationship.source_adr_id),
+      assertAdrCollaborationAccess(context, relationship.target_adr_id),
+    ]);
+  }
+
+  const nextSource = data.source_adr_id ?? relationship.source_adr_id;
+  const nextTarget = data.target_adr_id ?? relationship.target_adr_id;
+
+  await pgQuery(
+    `UPDATE adr_relationships
+     SET rel_type = $1, source_adr_id = $2, target_adr_id = $3
+     WHERE id = $4`,
+    [data.rel_type, nextSource, nextTarget, data.id],
+  );
+
+  if (context) {
+    await Promise.all([
+      publishAdrCollaborationSignal(
+        context,
+        nextSource,
+        "relationshipsRevision",
+        new Date().toISOString(),
+      ),
+      publishAdrCollaborationSignal(
+        context,
+        nextTarget,
+        "relationshipsRevision",
+        new Date().toISOString(),
+      ),
+    ]);
+  }
+  return { ok: true };
+}
+
+export const updateAdrRelationship = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        rel_type: z.enum([
+          "depends_on",
+          "related_to",
+          "supersedes",
+          "superseded_by",
+          "conflicts_with",
+          "affects",
+        ]),
+        source_adr_id: z.string().uuid().optional(),
+        target_adr_id: z.string().uuid().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return updateAdrRelationshipService(context.userId, data, context);
+  });
+
 // ─── publishAdr ───────────────────────────────────────────────────────────────
 
 export const publishAdr = createServerFn({ method: "POST" })
@@ -3001,6 +3265,17 @@ export const publishAdr = createServerFn({ method: "POST" })
        WHERE id = $3`,
       [nextVersion, repositoryPath ?? null, data.adr_id],
     );
+    await recordAdrTimelineEvent({
+      adr_id: data.adr_id,
+      user_id: userId,
+      event_type: "published",
+      summary: `Published version v${nextVersion}${gitCommitHash ? ` (${gitCommitHash.slice(0, 7)})` : ""}`,
+      changes: {
+        version: nextVersion,
+        git_commit_hash: gitCommitHash ?? null,
+        repository_path: repositoryPath ?? adr.repository_path ?? null,
+      },
+    });
     await publishAdrCollaborationSignal(context, data.adr_id, "status", "published");
 
     return { version: nextVersion, gitCommitHash, markdown };
@@ -3075,34 +3350,84 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
 
 // ─── getProjectForGraph ───────────────────────────────────────────────────────
 
+export async function getProjectForGraphService(userId: string, data: { project_id: string }) {
+  const [adrsRow, relsRow, projectRow] = await Promise.all([
+    pgQuery(
+      `SELECT DISTINCT a.id, a.full_id, a.title, a.status
+       FROM adrs a
+       WHERE (a.status <> 'draft' OR a.author_id = $2)
+         AND (a.project_id = $1
+           OR a.id IN (SELECT source_adr_id FROM adr_relationships r JOIN adrs ta ON ta.id = r.target_adr_id WHERE ta.project_id = $1)
+           OR a.id IN (SELECT target_adr_id FROM adr_relationships r JOIN adrs sa ON sa.id = r.source_adr_id WHERE sa.project_id = $1))`,
+      [data.project_id, userId],
+    ),
+    pgQuery(
+      `SELECT r.id, r.source_adr_id, r.target_adr_id, r.rel_type
+       FROM adr_relationships r
+       JOIN adrs sa ON sa.id = r.source_adr_id
+       JOIN adrs ta ON ta.id = r.target_adr_id
+       WHERE (r.source_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)
+          OR r.target_adr_id IN (SELECT id FROM adrs WHERE project_id = $1))
+         AND (sa.status <> 'draft' OR sa.author_id = $2)
+         AND (ta.status <> 'draft' OR ta.author_id = $2)`,
+      [data.project_id, userId],
+    ),
+    pgOne<{ graph_layout: Record<string, { x: number; y: number }> }>(
+      "SELECT graph_layout FROM projects WHERE id = $1",
+      [data.project_id],
+    ),
+  ]);
+  return {
+    adrs: adrsRow.rows ?? [],
+    relationships: relsRow.rows ?? [],
+    graph_layout: projectRow?.graph_layout ?? {},
+  };
+}
+
 export const getProjectForGraph = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) => z.object({ project_id: z.string().uuid() }).parse(d))
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
+    return getProjectForGraphService(context.userId, data);
+  });
 
-    const [adrsRow, relsRow] = await Promise.all([
-      pgQuery(
-        `SELECT DISTINCT a.id, a.full_id, a.title, a.status
-         FROM adrs a
-         WHERE (a.status <> 'draft' OR a.author_id = $2)
-           AND (a.project_id = $1
-             OR a.id IN (SELECT source_adr_id FROM adr_relationships r JOIN adrs ta ON ta.id = r.target_adr_id WHERE ta.project_id = $1)
-             OR a.id IN (SELECT target_adr_id FROM adr_relationships r JOIN adrs sa ON sa.id = r.source_adr_id WHERE sa.project_id = $1))`,
-        [data.project_id, userId],
-      ),
-      pgQuery(
-        `SELECT r.id, r.source_adr_id, r.target_adr_id, r.rel_type
-         FROM adr_relationships r
-         JOIN adrs sa ON sa.id = r.source_adr_id
-         JOIN adrs ta ON ta.id = r.target_adr_id
-         WHERE (r.source_adr_id IN (SELECT id FROM adrs WHERE project_id = $1)
-            OR r.target_adr_id IN (SELECT id FROM adrs WHERE project_id = $1))
-           AND (sa.status <> 'draft' OR sa.author_id = $2)
-           AND (ta.status <> 'draft' OR ta.author_id = $2)`,
-        [data.project_id, userId],
-      ),
-    ]);
-    return { adrs: adrsRow.rows ?? [], relationships: relsRow.rows ?? [] };
+// ─── saveProjectGraphLayout ───────────────────────────────────────────────────
+
+export async function saveProjectGraphLayoutService(
+  userId: string,
+  data: { project_id: string; layout: Record<string, { x: number; y: number }> },
+) {
+  const isAdmin = !!(await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  ));
+  const isMember = !!(await pgOne(
+    "SELECT 1 FROM project_members WHERE user_id = $1 AND project_id = $2",
+    [userId, data.project_id],
+  ));
+  if (!isAdmin && !isMember) {
+    throw new Error("Unauthorized to edit project graph layout");
+  }
+
+  await pgQuery("UPDATE projects SET graph_layout = $1::jsonb WHERE id = $2", [
+    JSON.stringify(data.layout),
+    data.project_id,
+  ]);
+  return { ok: true };
+}
+
+export const saveProjectGraphLayout = createServerFn({ method: "POST" })
+  .middleware([requireFlexibleAuth])
+  .validator((d: unknown) =>
+    z
+      .object({
+        project_id: z.string().uuid(),
+        layout: z.record(z.object({ x: z.number(), y: z.number() })),
+      })
+      .parse(d),
+  )
+  .handler(async ({ context: rawCtx, data }) => {
+    const context = ctx(rawCtx);
+    return saveProjectGraphLayoutService(context.userId, data);
   });

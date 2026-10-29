@@ -45,6 +45,7 @@ This manual provides an end-to-end operational guide for developers, architects,
 - **Project**: The boundary container for a software system or domain. Every ADR belongs to a project and receives an auto-generated unique identifier based on the project's code (e.g. `DEC-ADR-001`).
 - **Git as Single Source of Truth**: When published, ADRs are automatically generated as standardized Markdown files and committed/pushed to your Git repository.
 - **Governance by Consensus**: Decisions and critical actions (such as ADR publishing and project deletion) require formal team approvals before execution.
+- **Workspace Ergonomics (Collapsible Sidebar)**: To maximize reading and editing space on wide displays or laptops, the left sidebar can be collapsed into a compact icon rail. Hovering over the collapsed rail smoothly expands the full navigation panel on demand without shifting page content. Use the header button or press `Cmd+B` / `Ctrl+B` to toggle between collapsed and pinned modes. Your preference is automatically persisted.
 
 ---
 
@@ -219,18 +220,38 @@ When drafting is complete, click **Submit for Review**. This transitions the sta
 
 ---
 
-### Discussions & Comments
-- On the ADR detail page, use the **Discussion** tab to ask questions or discuss trade-offs.
-- All comments are preserved chronologically with timestamps and author profiles.
+### Discussions, @ Mentions & Comment Resolution
+- On the ADR detail page, use the **Discussion** section to ask questions or discuss trade-offs.
+- **Tagging Team Members with `@`**: Type `@` in any comment to open an autocomplete popup listing project team members. Selecting a user inserts `@username`. Mentioned users receive real-time notifications in their notification inbox with direct links to the ADR.
+- **Comment Resolution**: Any team member can resolve actionable discussion feedback by clicking **Resolve**. Resolved comments display a green badge showing who resolved the comment, while keeping discussion histories intact. Resolved comments can be reopened at any time.
 
 ---
 
-### Review Decisions (Approve or Request Changes)
+### Assigning ADR Reviewers
+- In the right sidebar under **Assigned Reviewer**, project members or administrators can assign an engineer to review the ADR.
+- Assigning a reviewer posts a system timeline note to the ADR discussion and sends a targeted notification to the assigned reviewer.
+- The user's **Dashboard** highlights ADRs where they are the assigned reviewer, showing which decisions require their active review.
+
+---
+
+### Review Decisions & Approval Revocation
 - Reviewers click **Approve** to record support, or **Request Changes** to request modifications.
 - Decyra displays real-time progress:
   - Progress bar showing `Current Approvals / Required Approvals`.
   - List of approving team members with timestamps.
   - List of reviewers requesting changes.
+- **Manual Revocation**: If a reviewer previously approved an ADR and wishes to withdraw their approval (e.g., pending further discussion), they can click **Revoke Approval**.
+- **Automatic Revocation on Edits**: When an ADR is edited or modified after approvals have been granted, Decyra automatically revokes existing approvals and resets the status to `under_review` (or `draft` for published decisions). This guarantees that reviewers re-verify any new changes before a decision is finalized.
+
+---
+
+### Activity & Edit Timeline (Who Edited What and When)
+Decyra provides a comprehensive, immutable audit log for every ADR in the **Activity & Edit Timeline** section:
+- **Who Edited**: Displays the actor's avatar, full name, and `@username`. If changes originated from Git repository synchronization, it indicates `Git Sync`.
+- **What Was Edited**: Clearly flags which specific sections were modified using highlighted badges (e.g., `Title`, `Context`, `Decision`, `Consequences`, `Alternatives`, `Tags`, `Design Changes`, `Major Impacts`, `References`).
+- **When**: Records exact timestamps (e.g., `Oct 29, 2026, 4:21 PM`) for full auditability and traceability.
+- **Status & Review Milestones**: Captures lifecycle milestones including draft creation, status transitions (e.g., `draft → under_review`), reviewer assignments, approvals, change requests, comment resolutions, and version publishing.
+- **Git Commit Linkage**: When ADRs are published or synchronized from Git, the timeline records the Git commit hash and repository path.
 
 ---
 
@@ -257,7 +278,8 @@ When drafting is complete, click **Submit for Review**. This transitions the sta
 Published ADRs cannot be directly modified in place. Clicking **Edit** on a published ADR:
 1. Bumps the ADR back to `Draft` mode for revision.
 2. Retains the previous version snapshot in the **Version History** tab.
-3. Re-submits the updated proposal through the review and approval workflow before publishing the next version (`v2`).
+3. Automatically logs the edited sections and actor to the **Activity & Edit Timeline**.
+4. Re-submits the updated proposal through the review and approval workflow before publishing the next version (`v2`).
 
 ---
 
@@ -302,20 +324,55 @@ When enabled, Decyra listens for pushes to your monitored branch:
 
 ---
 
-## 8. Relationship Graph & Dependency Mapping
+## 8. Relationship Graph & Visual Dependency Editor
 
-Architecture decisions rarely exist in isolation. Decyra allows explicit linking between ADRs:
+Architecture decisions rarely exist in isolation. Decyra provides a full-featured, interactive **Relationship Graph & Architecture Diagrammer** directly in your browser:
 
-### Relationship Types
-- **Depends on / Required by**: Indicates architectural prerequisites.
-- **Supersedes / Superseded by**: Marks older decisions replaced by new standards.
-- **Conflicts with**: Highlights mutually exclusive architectural paths.
-- **Related to**: General contextual association.
+### Directional Arrows & Relationship Semantics
 
-### Viewing the Interactive Graph
-1. On the project page, click **Graph**.
-2. An interactive React Flow visualization displays all decisions as nodes with directional, color-coded edges.
-3. Drag nodes, zoom in/out, or click any node to jump directly to that ADR.
+In Decyra, every arrow indicates a directional relationship from **Source** &rarr; **Target**:
+
+| Relationship | Meaning in Diagram (`Source ──► Target`) |
+| :--- | :--- |
+| **`supersedes`** | **Newer replaces Older**: The source decision replaces and obsoletes the target decision. |
+| **`replaced by`** | **Older replaced by Newer**: The source decision is superseded and rendered obsolete by the target decision. |
+| **`depends on`** | **Prerequisite**: The source decision requires the target decision to be accepted/implemented first. |
+| **`affects`** | **Impact**: The source decision impacts or modifies architectural aspects of the target decision. |
+| **`conflicts with`** | **Mutual Incompatibility**: The source and target decisions cannot coexist in the system. |
+| **`related to`** | **Contextual Association**: The decisions are conceptually or architecturally linked. |
+
+---
+
+### Interactive Visual Graph Editing
+
+You can create, modify, and delete relationships directly on the visual graph canvas without having to open individual ADR pages:
+1. **Drag-to-Connect Handles**:
+   - Every ADR card in the graph has connection dots (top, bottom, left, and right).
+   - Click and drag from any handle on ADR A and drop onto ADR B to connect them.
+   - A modal immediately opens displaying the directional arrow `[ADR A] ──► [ADR B]` with a plain-English explanation of the relationship.
+   - Choose the relationship type or click **Swap Direction** to invert the arrow.
+2. **Editing & Deleting Connections**:
+   - Click any connection line or label badge in the graph.
+   - Change the relationship type in place, swap its direction, or click **Delete Connection** to remove it.
+3. **Manual Connection Dialog**:
+   - Click **+ Add Connection** in the top toolbar to choose any two ADRs from dropdowns and establish a relationship.
+
+---
+
+### Custom Layouts & Persistence
+
+- **Save Graph Layout**: Drag ADR cards into custom architectural groupings, pipelines, or clusters. When you reposition cards, the **Save Layout \*** button highlights. Click **Save Layout** to persist your arrangement in the database. When team members view the graph, they see your exact saved layout.
+- **Auto Layout**: Click **Auto Layout** at any time to automatically re-organize all cards into a clean, structured grid.
+
+---
+
+### Light Mode & Dark Mode High-Contrast Styling
+
+- The graph canvas automatically synchronizes with Decyra's active color theme (`Light` or `Dark`).
+- In **Light Mode**:
+  - Cards render with crisp, high-contrast borders and rich status badges.
+  - Connection lines and label badges are rendered with solid backgrounds and dark, high-contrast typography so all relationships and text are easily readable.
+  - The grid background and mini-map adapt seamlessly to a light canvas.
 
 ---
 

@@ -47,7 +47,7 @@ function Dashboard() {
     { name: "Superseded", value: c.superseded, key: "superseded" },
   ].filter((d) => d.value > 0);
 
-  const reviewRequired = data?.reviewRequiredAdrs ?? [];
+  const reviewRequired = data?.reviewRequired ?? [];
   const resolvedComments = data?.resolvedComments ?? [];
   const resolvedCount = data?.resolvedCommentsCount ?? 0;
 

@@ -92,7 +92,7 @@ export async function pushAdrToGit(
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
       },
-    });
+    } as any);
 
     // Clone (shallow) the target branch
     await git.clone(repoUrl, tmpDir, ["--branch", branch, "--depth", "1"]);
@@ -103,7 +103,7 @@ export async function pushAdrToGit(
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
       },
-    });
+    } as any);
     await repoGit.addConfig("user.email", "decyra-bot@decyra.dev");
     await repoGit.addConfig("user.name", "Decyra Bot");
 
@@ -187,7 +187,7 @@ export async function migrateProjectAdrsToGit(opts: MigrateProjectOptions): Prom
       ...process.env,
       GIT_TERMINAL_PROMPT: "0",
     },
-  });
+  } as any);
 
   if (adrs.length === 0) {
     try {
@@ -224,7 +224,7 @@ export async function migrateProjectAdrsToGit(opts: MigrateProjectOptions): Prom
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
       },
-    });
+    } as any);
 
     if (!branchExists) {
       await repoGit.checkout(["-B", branch]);
@@ -393,7 +393,7 @@ export async function cloneAndReadRepositoryAdrs(
 ): Promise<{ files: AdrFileContent[]; skippedFiles: string[] }> {
   const { repoUrl, gitPat, branch, adrPath } = opts;
   const token = gitPat?.trim();
-  const workingRepoUrl = buildAuthenticatedGitUrl(repoUrl, token);
+  const workingRepoUrl = buildAuthenticatedGitUrl(repoUrl, token ?? "");
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "decyra-import-"));
   try {
@@ -402,7 +402,7 @@ export async function cloneAndReadRepositoryAdrs(
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
       },
-    });
+    } as any);
     await client.clone(workingRepoUrl, tmpDir, ["--branch", branch, "--depth", "1"]);
 
     const resolvedDir = resolveRepositoryAdrPath(tmpDir, adrPath);

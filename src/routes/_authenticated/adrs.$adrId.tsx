@@ -16,7 +16,8 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Edit, Send, ThumbsUp, MessageSquare, GitCommit,
   GitBranch, Link as LinkIcon, X, Plus, Book, ChevronDown, ChevronRight,
-  Eye, Rocket, ExternalLink, Trash2, UserCheck, CheckCircle2, Check, AtSign
+  Eye, Rocket, ExternalLink, Trash2, UserCheck, CheckCircle2, Check, AtSign,
+  History, Clock, FileEdit, Sparkles, ArrowRight
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/adrs/$adrId")({
@@ -470,6 +471,120 @@ function AdrDetail() {
             </div>
           </Collapsible>
         )}
+
+        {/* Activity & Edit Timeline */}
+        <Collapsible
+          title={`Activity & Edit Timeline (${(data?.timeline ?? []).length})`}
+          icon={<History className="h-4 w-4" />}
+          defaultOpen={true}
+        >
+          {(data?.timeline ?? []).length === 0 ? (
+            <p className="text-xs text-muted-foreground italic py-3">No activity recorded yet.</p>
+          ) : (
+            <div className="relative pl-6 space-y-4 pt-4 pb-1 before:absolute before:left-2 before:top-4 before:bottom-3 before:w-0.5 before:bg-border">
+              {(data?.timeline as any[]).map((evt) => {
+                const badge = getTimelineBadge(evt.event_type);
+                const changes = evt.changes ?? {};
+                const actorName =
+                  evt.profiles?.full_name ||
+                  evt.profiles?.username ||
+                  (evt.event_type === "git_synced" ? "Git Sync" : "System");
+                const username = evt.profiles?.username;
+                const dateStr = new Date(evt.created_at).toLocaleString(undefined, {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+
+                return (
+                  <div key={evt.id} className="relative group">
+                    <div className="absolute -left-6 top-1 grid h-4 w-4 -translate-x-1/2 place-items-center rounded-full bg-card border border-border text-[9px] shadow-sm">
+                      {badge.icon}
+                    </div>
+
+                    <div className="rounded-lg border border-border/80 bg-background/50 p-3 hover:border-border transition-colors">
+                      <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${badge.color}`}
+                          >
+                            {badge.label}
+                          </span>
+                          <span className="text-xs font-semibold text-foreground">{actorName}</span>
+                          {username && (
+                            <span className="text-[11px] text-muted-foreground font-mono">@{username}</span>
+                          )}
+                        </div>
+                        <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                          <Clock className="h-3 w-3 opacity-60" />
+                          {dateStr}
+                        </span>
+                      </div>
+
+                      <div className="text-xs font-medium text-foreground/90 mt-1">
+                        {evt.summary}
+                      </div>
+
+                      {/* Changed fields badges */}
+                      {Array.isArray(changes.changed_fields) && changes.changed_fields.length > 0 && (
+                        <div className="flex items-center gap-1.5 flex-wrap mt-2 pt-2 border-t border-border/40">
+                          <span className="text-[10px] uppercase font-semibold text-muted-foreground">
+                            Edited sections:
+                          </span>
+                          {changes.changed_fields.map((f: string) => (
+                            <span
+                              key={f}
+                              className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-primary/10 text-primary border border-primary/20"
+                            >
+                              {f}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Status change details */}
+                      {changes.previous_status &&
+                        changes.next_status &&
+                        changes.previous_status !== changes.next_status && (
+                          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-2">
+                            <span className="font-semibold text-[10px] uppercase">Status:</span>
+                            <span className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px]">
+                              {changes.previous_status}
+                            </span>
+                            <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                            <span className="font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded text-[10px] font-semibold">
+                              {changes.next_status}
+                            </span>
+                          </div>
+                        )}
+
+                      {/* Version details */}
+                      {changes.version && (
+                        <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
+                          <span className="font-mono text-primary font-bold">v{changes.version}</span>
+                          {changes.git_commit_hash && (
+                            <span className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded">
+                              commit {changes.git_commit_hash.slice(0, 7)}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Note */}
+                      {changes.note && (
+                        <p className="mt-2 text-xs text-muted-foreground italic bg-muted/40 p-2 rounded border border-border/40">
+                          "{changes.note}"
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Collapsible>
 
         {/* Discussion / Comments */}
         <div className="mt-4 rounded-xl border border-border bg-card p-5">
@@ -951,8 +1066,18 @@ function Section({ title, body }: { title: string; body: string }) {
   );
 }
 
-function Collapsible({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
+function Collapsible({
+  title,
+  icon,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="mb-4 rounded-xl border border-border bg-card overflow-hidden">
       <button
@@ -966,6 +1091,77 @@ function Collapsible({ title, icon, children }: { title: string; icon: React.Rea
       {open && <div className="px-5 pb-5 border-t border-border">{children}</div>}
     </div>
   );
+}
+
+function getTimelineBadge(type: string) {
+  switch (type) {
+    case "created":
+      return {
+        icon: <Sparkles className="h-2.5 w-2.5 text-emerald-500" />,
+        label: "Created",
+        color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
+      };
+    case "edited":
+      return {
+        icon: <FileEdit className="h-2.5 w-2.5 text-blue-500" />,
+        label: "Edited",
+        color: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
+      };
+    case "status_changed":
+      return {
+        icon: <GitCommit className="h-2.5 w-2.5 text-amber-500" />,
+        label: "Status Changed",
+        color: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
+      };
+    case "reviewer_assigned":
+      return {
+        icon: <UserCheck className="h-2.5 w-2.5 text-purple-500" />,
+        label: "Reviewer Assigned",
+        color: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
+      };
+    case "approved":
+      return {
+        icon: <ThumbsUp className="h-2.5 w-2.5 text-emerald-500" />,
+        label: "Approved",
+        color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
+      };
+    case "changes_requested":
+      return {
+        icon: <X className="h-2.5 w-2.5 text-rose-500" />,
+        label: "Changes Requested",
+        color: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20",
+      };
+    case "approval_revoked":
+      return {
+        icon: <X className="h-2.5 w-2.5 text-amber-500" />,
+        label: "Approval Revoked",
+        color: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
+      };
+    case "comment_resolved":
+      return {
+        icon: <CheckCircle2 className="h-2.5 w-2.5 text-teal-500" />,
+        label: "Resolved",
+        color: "bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-500/20",
+      };
+    case "published":
+      return {
+        icon: <Rocket className="h-2.5 w-2.5 text-violet-500" />,
+        label: "Published",
+        color: "bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/20",
+      };
+    case "git_synced":
+      return {
+        icon: <GitBranch className="h-2.5 w-2.5 text-cyan-500" />,
+        label: "Git Sync",
+        color: "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/20",
+      };
+    default:
+      return {
+        icon: <Clock className="h-2.5 w-2.5 text-muted-foreground" />,
+        label: "Activity",
+        color: "bg-muted text-muted-foreground border-border",
+      };
+  }
 }
 
 function MarkdownProse({ body }: { body: string }) {
