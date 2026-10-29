@@ -2123,7 +2123,14 @@ export async function submitFinalDecisionService(
     comment?: string;
   },
 ) {
-  const adr = await pgOne<{ status: string; author_id: string; project_id: string; full_id: string; title: string; current_version: number }>(
+  const adr = await pgOne<{
+    status: string;
+    author_id: string;
+    project_id: string;
+    full_id: string;
+    title: string;
+    current_version: number;
+  }>(
     "SELECT status, author_id, project_id, full_id, title, current_version FROM adrs WHERE id = $1",
     [data.adr_id],
   );
@@ -2148,40 +2155,84 @@ export async function submitFinalDecisionService(
     throw new Error("Only project admins or platform admins can make final approval or rejection decisions.");
   }
 
+  // Fetch current approvals to check if criteria were satisfied or if an override applies
+  const approvalsRows = await pgQuery<{ user_id: string; decision: string }>(
+    "SELECT user_id, decision FROM approvals WHERE adr_id = $1",
+    [data.adr_id],
+  );
+  const approvalsList = approvalsRows.rows ?? [];
+  const approvedCount = approvalsList.filter((a) => a.decision === "approve").length;
+  const rejectedCount = approvalsList.filter((a) => a.decision === "request_changes").length;
+  const userApproval = approvalsList.find((a) => a.user_id === userId);
+  const userPersonallyRejected = userApproval?.decision === "request_changes";
+
+  const projectRow = await pgOne<{ required_approvals: number }>(
+    "SELECT required_approvals FROM projects WHERE id = $1",
+    [adr.project_id],
+  );
+  const requiredApprovals = projectRow?.required_approvals ?? 3;
+
+  const isOverriding =
+    (data.decision === "approved" && (approvedCount < requiredApprovals || rejectedCount > 0 || userPersonallyRejected)) ||
+    (data.decision === "rejected" && approvedCount >= requiredApprovals && rejectedCount === 0);
+
+  const commentText = data.comment?.trim() ?? "";
+  if (isOverriding && commentText.length < 15) {
+    throw new Error(
+      "A detailed rationale comment (at least 15 characters) is mandatory when overriding review criteria or existing rejections."
+    );
+  }
+
   // Update ADR status directly (irrespective of team votes)
   await pgQuery("UPDATE adrs SET status = $1 WHERE id = $2", [data.decision, data.adr_id]);
 
-  // Record admin's decision in approvals table
-  const approvalDecision = data.decision === "approved" ? "approve" : "request_changes";
-  await pgQuery(
-    `INSERT INTO approvals (adr_id, user_id, decision, note)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (adr_id, user_id) DO UPDATE
-       SET decision = EXCLUDED.decision, note = EXCLUDED.note`,
-    [data.adr_id, userId, approvalDecision, data.comment ?? null],
-  );
+  // NOTE: We deliberately do NOT overwrite the personal approval record in approvals table.
+  // The user's personal vote (e.g. request_changes) remains intact so the review audit trail
+  // truthfully shows their peer review stance.
 
-  // If a comment was provided, post it as an official decision comment
-  if (data.comment?.trim()) {
-    const prefix = data.decision === "approved" ? "🏛️ [Admin Final Approval]" : "🏛️ [Admin Final Rejection]";
+  // Post the official administrative decision comment
+  const roleLabel = isAdmin ? "Platform Admin" : "Project Admin";
+  if (commentText) {
+    const prefix =
+      data.decision === "approved"
+        ? "🏛️ [Admin Final Approval]"
+        : "🏛️ [Admin Final Rejection]";
+    const overrideSuffix =
+      userPersonallyRejected && data.decision === "approved"
+        ? " (Overrode Personal Rejection)"
+        : "";
     await pgQuery(
       "INSERT INTO comments (adr_id, user_id, body) VALUES ($1, $2, $3)",
-      [data.adr_id, userId, `${prefix} ${data.comment.trim()}`],
+      [data.adr_id, userId, `${prefix}${overrideSuffix} ${commentText}`],
     );
   }
 
   // Record timeline event
   const isApproved = data.decision === "approved";
-  const roleLabel = isAdmin ? "Platform Admin" : "Project Admin";
+  let summary = `Final ${isApproved ? "Approved" : "Rejected"} by ${roleLabel}`;
+  if (userPersonallyRejected && isApproved) {
+    summary += " (overrode personal rejection)";
+  } else if (isOverriding) {
+    summary += ` (override: ${approvedCount}/${requiredApprovals} approvals, ${rejectedCount} rejections)`;
+  }
+  if (commentText) {
+    summary += `: "${commentText}"`;
+  }
+
   await recordAdrTimelineEvent({
     adr_id: data.adr_id,
     user_id: userId,
     event_type: isApproved ? "final_approved" : "final_rejected",
-    summary: `Final ${isApproved ? "Approved" : "Rejected"} by ${roleLabel}${data.comment ? `: "${data.comment}"` : ""}`,
+    summary,
     changes: {
       final_decision: data.decision,
-      comment: data.comment ?? null,
+      comment: commentText || null,
       previous_status: adr.status,
+      overrode_personal_rejection: Boolean(userPersonallyRejected && isApproved),
+      is_override: isOverriding,
+      approved_count: approvedCount,
+      rejected_count: rejectedCount,
+      required_approvals: requiredApprovals,
     },
   });
 
@@ -3589,6 +3640,166 @@ export const publishAdr = createServerFn({ method: "POST" })
 
 // ─── findSimilarAdrs ──────────────────────────────────────────────────────────
 
+const SIMILARITY_STOP_WORDS = new Set([
+  "about", "above", "across", "after", "again", "against", "all", "almost", "alone",
+  "along", "already", "also", "although", "always", "among", "an", "and", "another",
+  "any", "anybody", "anyone", "anything", "anywhere", "are", "area", "areas", "aren't",
+  "around", "ask", "asked", "asking", "asks", "at", "away", "back", "backed", "backing",
+  "backs", "be", "became", "because", "become", "becomes", "been", "before", "began",
+  "behind", "being", "beings", "best", "better", "between", "big", "both", "but", "by",
+  "came", "can", "cannot", "case", "cases", "certain", "certainly", "clear", "clearly",
+  "come", "could", "did", "differ", "different", "differently", "do", "does", "done",
+  "down", "downed", "downing", "downs", "during", "each", "early", "either", "end",
+  "ended", "ending", "ends", "enough", "even", "evenly", "ever", "every", "everybody",
+  "everyone", "everything", "everywhere", "face", "faces", "fact", "facts", "far",
+  "felt", "few", "fewer", "find", "finds", "first", "for", "four", "from", "full",
+  "fully", "further", "furthered", "furthering", "furthers", "gave", "general", "generally",
+  "get", "gets", "give", "given", "gives", "go", "going", "good", "goods", "got", "great",
+  "greater", "greatest", "group", "grouped", "grouping", "groups", "had", "has", "have",
+  "having", "he", "her", "here", "herself", "high", "higher", "highest", "him", "himself",
+  "his", "how", "however", "if", "important", "in", "interest", "interested", "interesting",
+  "interests", "into", "is", "it", "its", "itself", "just", "keep", "keeps", "kind",
+  "knew", "know", "known", "knows", "large", "largely", "last", "later", "latest", "least",
+  "less", "let", "lets", "like", "likely", "long", "longer", "longest", "made", "make",
+  "making", "man", "many", "may", "me", "member", "members", "men", "might", "more",
+  "most", "mostly", "mr", "mrs", "much", "must", "my", "myself", "name", "necessary",
+  "need", "needed", "needing", "needs", "never", "new", "newer", "newest", "next", "no",
+  "nobody", "non", "noone", "not", "nothing", "now", "nowhere", "number", "numbers",
+  "of", "off", "often", "old", "older", "oldest", "on", "once", "one", "only", "open",
+  "opened", "opening", "opens", "or", "order", "ordered", "ordering", "orders", "other",
+  "others", "our", "out", "over", "part", "parted", "parting", "parts", "per", "perhaps",
+  "place", "places", "point", "pointed", "pointing", "points", "possible", "present",
+  "presented", "presenting", "presents", "problem", "problems", "put", "puts", "quite",
+  "rather", "really", "right", "room", "rooms", "said", "same", "saw", "say", "says",
+  "second", "seconds", "see", "seem", "seemed", "seeming", "seems", "sees", "several",
+  "shall", "she", "should", "show", "showed", "showing", "shows", "side", "sides",
+  "since", "small", "smaller", "smallest", "so", "some", "somebody", "someone", "something",
+  "somewhere", "state", "states", "still", "such", "sure", "take", "taken", "than",
+  "that", "the", "their", "them", "then", "there", "therefore", "these", "they", "thing",
+  "things", "think", "thinks", "this", "those", "though", "thought", "thoughts", "three",
+  "through", "thus", "to", "today", "together", "too", "took", "toward", "turn", "turned",
+  "turning", "turns", "two", "under", "until", "up", "upon", "us", "use", "used", "uses",
+  "using", "very", "want", "wanted", "wanting", "wants", "was", "way", "ways", "we",
+  "well", "wells", "went", "were", "what", "when", "where", "whether", "which", "while",
+  "who", "whole", "whose", "why", "will", "with", "within", "without", "work", "worked",
+  "working", "works", "would", "year", "years", "yet", "you", "young", "younger", "youngest",
+  "your", "yours",
+  // Common ADR template terms
+  "context", "decision", "consequences", "alternatives", "status", "title", "project",
+  "supersedes", "superseded", "architecture", "architectural", "record", "option", "options",
+  "system", "systems"
+]);
+
+function extractMeaningfulKeywords(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .toLowerCase()
+        .replace(/[^a-z0-9\s_-]/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !SIMILARITY_STOP_WORDS.has(w))
+    )
+  );
+}
+
+export async function findSimilarAdrsService(
+  userId: string,
+  data: {
+    project_id: string;
+    title: string;
+    context: string;
+    decision?: string;
+    exclude_adr_id?: string;
+  },
+) {
+  const candidateTitleWords = extractMeaningfulKeywords(data.title || "");
+  const candidateContentWords = extractMeaningfulKeywords(`${data.context || ""} ${data.decision || ""}`);
+
+  // If no non-trivial keywords exist, do not return false matches
+  if (candidateTitleWords.length === 0 && candidateContentWords.length === 0) {
+    return [];
+  }
+
+  const isAdminRow = await pgOne(
+    "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
+    [userId],
+  );
+  const isAdmin = !!isAdminRow;
+
+  const params: any[] = [data.project_id, userId];
+  let sql = `
+    SELECT a.id, a.full_id, a.title, a.context, a.decision
+    FROM adrs a
+    JOIN projects p ON p.id = a.project_id
+  `;
+
+  if (!isAdmin) {
+    sql += ` JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $2 `;
+  }
+
+  sql += ` WHERE a.project_id = $1 AND (a.status <> 'draft' OR a.author_id = $2) `;
+
+  if (data.exclude_adr_id) {
+    params.push(data.exclude_adr_id);
+    sql += ` AND a.id <> $${params.length} `;
+  }
+
+  sql += ` ORDER BY a.adr_number ASC LIMIT 100 `;
+
+  const result = await pgQuery<{
+    id: string;
+    full_id: string;
+    title: string;
+    context: string;
+    decision: string;
+  }>(sql, params);
+
+  const scored: Array<{ id: string; full_id: string; title: string; score: number; reason: string }> = [];
+
+  for (const existing of result.rows ?? []) {
+    const existingTitleWords = extractMeaningfulKeywords(existing.title || "");
+    const existingContentWords = extractMeaningfulKeywords(`${existing.context || ""} ${existing.decision || ""}`);
+
+    const titleOverlap = candidateTitleWords.filter((w) => existingTitleWords.includes(w));
+    const titleInContent = candidateTitleWords.filter((w) => existingContentWords.includes(w));
+    const contentOverlap = candidateContentWords.filter((w) => existingContentWords.includes(w));
+
+    // Weighted similarity scoring: title overlap has highest weight
+    const score =
+      titleOverlap.length * 3 +
+      titleInContent.length * 1.5 +
+      contentOverlap.length * 1;
+
+    // Meaningful similarity criteria:
+    // 1. Two or more meaningful title words match, OR
+    // 2. One title word matches + at least one strong content match (score >= 4), OR
+    // 3. Substantial content overlap across technical terms (score >= 5.5)
+    const isSimilar =
+      titleOverlap.length >= 2 ||
+      (titleOverlap.length >= 1 && score >= 4) ||
+      score >= 5.5;
+
+    if (isSimilar) {
+      const matchTerms = Array.from(new Set([...titleOverlap, ...contentOverlap])).slice(0, 4);
+      scored.push({
+        id: existing.id,
+        full_id: existing.full_id,
+        title: existing.title,
+        score,
+        reason: matchTerms.length > 0 ? `Shared terms: ${matchTerms.join(", ")}` : "Similar architectural scope",
+      });
+    }
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 3).map((r) => ({
+    id: r.id,
+    full_id: r.full_id,
+    title: r.title,
+    reason: r.reason,
+  }));
+}
+
 export const findSimilarAdrs = createServerFn({ method: "POST" })
   .middleware([requireFlexibleAuth])
   .validator((d: unknown) =>
@@ -3597,61 +3808,14 @@ export const findSimilarAdrs = createServerFn({ method: "POST" })
         project_id: z.string().uuid(),
         title: z.string(),
         context: z.string(),
+        decision: z.string().optional(),
+        exclude_adr_id: z.string().uuid().optional(),
       })
       .parse(d),
   )
   .handler(async ({ context: rawCtx, data }) => {
     const context = ctx(rawCtx);
-    const { userId } = context;
-
-    // Extract keywords (longer than 4 chars)
-    const text = `${data.title} ${data.context}`.toLowerCase();
-    const words = Array.from(new Set(text.split(/\W+/).filter((w) => w.length > 4))).slice(0, 5);
-
-    if (words.length === 0) return [];
-
-    const isAdminRow = await pgOne(
-      "SELECT 1 FROM user_roles WHERE user_id = $1 AND role = 'admin'",
-      [userId],
-    );
-    const isAdmin = !!isAdminRow;
-
-    const params: any[] = [];
-    let sql = `
-      SELECT a.id, a.full_id, a.title
-      FROM adrs a
-      JOIN projects p ON p.id = a.project_id
-    `;
-
-    if (!isAdmin) {
-      params.push(userId);
-      sql += ` JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1 `;
-    }
-
-    const offset = params.length;
-    words.forEach((w) => params.push(`%${w}%`));
-
-    const conditions = words.map(
-      (_, i) =>
-        `(lower(a.title) LIKE $${offset + i + 1} OR lower(a.context) LIKE $${offset + i + 1})`,
-    );
-    const visibilityParamIndex = params.length + 1;
-    params.push(userId);
-    sql += ` WHERE (a.status <> 'draft' OR a.author_id = $${visibilityParamIndex})
-             AND (${conditions.join(" OR ")}) LIMIT 20`;
-
-    const result = await pgQuery(sql, params);
-
-    const scored = (result.rows ?? []).map((r) => {
-      const str = `${r.title} ${r.context}`.toLowerCase();
-      let score = 0;
-      words.forEach((w) => {
-        if (str.includes(w)) score++;
-      });
-      return { ...r, score };
-    });
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, 5).map((r) => ({ id: r.id, full_id: r.full_id, title: r.title }));
+    return findSimilarAdrsService(context.userId, data);
   });
 
 // ─── getProjectForGraph ───────────────────────────────────────────────────────

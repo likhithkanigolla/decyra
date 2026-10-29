@@ -27,6 +27,7 @@ function NewAdr() {
   const [form, setForm] = useState<AdrFormData>(DEFAULT_ADR_FORM);
   const [busy, setBusy] = useState(false);
   const [similarAdrs, setSimilarAdrs] = useState<any[]>([]);
+  const [showSimilarModal, setShowSimilarModal] = useState(false);
   const [supersededAdr, setSupersededAdr] = useState<any>(null);
 
   useEffect(() => {
@@ -48,24 +49,9 @@ function NewAdr() {
     }
   }, [supersedes, getAdrFn]);
 
-  useEffect(() => {
-    if (form.title.trim().length < 3 && form.context.trim().length < 5) {
-      setSimilarAdrs([]);
-      return;
-    }
-    const timer = setTimeout(() => {
-      similarFn({ data: { title: form.title, context: form.context, project_id: projectId } })
-        .then((res) => {
-          setSimilarAdrs(res.slice(0, 3));
-        })
-        .catch(console.error);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [form.title, form.context, projectId, similarFn]);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function executeCreation() {
     setBusy(true);
+    setShowSimilarModal(false);
     try {
       const tags = form.tags.split(",").map((t) => t.trim()).filter(Boolean);
       const adr = await createAdrFn({
@@ -111,6 +97,38 @@ function NewAdr() {
     }
   }
 
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.title.trim()) {
+      toast.error("Please enter an ADR title");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      // Check for genuinely similar ADRs only on submit
+      const similar = await similarFn({
+        data: {
+          project_id: projectId,
+          title: form.title,
+          context: form.context,
+          decision: form.decision,
+        },
+      });
+
+      if (similar && similar.length > 0) {
+        setSimilarAdrs(similar);
+        setShowSimilarModal(true);
+        setBusy(false);
+        return;
+      }
+    } catch (err) {
+      console.error("Similarity check error:", err);
+    }
+
+    await executeCreation();
+  }
+
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <button
@@ -143,25 +161,61 @@ function NewAdr() {
         </div>
       )}
 
-      <div className="mt-6">
-        {similarAdrs.length > 0 && (
-          <div className="mb-6 rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-sm text-amber-600 dark:text-amber-400">
-            <div className="flex items-center gap-2 font-semibold mb-2">
-              <AlertTriangle className="h-4 w-4" /> Similar ADRs already exist
+      {/* Similarity Confirmation Modal */}
+      {showSimilarModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-semibold text-base">
+              <AlertTriangle className="h-5 w-5 shrink-0" />
+              <span>Similar Architectural Decisions Exist</span>
             </div>
-            <p className="mb-2 opacity-90">Please review these existing decisions in this project to avoid duplicates:</p>
-            <ul className="list-disc list-inside space-y-1">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              We found existing decision(s) in this project that share keywords or architectural scope with what you wrote. Please review them to avoid duplicate decisions:
+            </p>
+            <div className="space-y-2 max-h-56 overflow-y-auto rounded-lg border border-border/80 bg-muted/20 p-2.5">
               {similarAdrs.map((a: any) => (
-                <li key={a.id}>
-                  <Link to="/adrs/$adrId" params={{ adrId: a.id }} target="_blank" className="font-mono hover:underline text-primary font-medium">
-                    {a.full_id}
-                  </Link>
-                  <span className="ml-1 text-muted-foreground">— {a.title}</span>
-                </li>
+                <div key={a.id} className="p-2.5 rounded-md border border-border/60 bg-card hover:border-primary/40 transition-colors">
+                  <div className="flex items-center justify-between gap-2">
+                    <Link
+                      to="/adrs/$adrId"
+                      params={{ adrId: a.id }}
+                      target="_blank"
+                      className="font-mono text-xs font-bold text-primary hover:underline inline-flex items-center gap-1"
+                    >
+                      {a.full_id}
+                    </Link>
+                    {a.reason && (
+                      <span className="text-[10px] text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded">
+                        {a.reason}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs font-medium text-foreground mt-0.5">{a.title}</div>
+                </div>
               ))}
-            </ul>
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-border/60">
+              <button
+                type="button"
+                onClick={() => setShowSimilarModal(false)}
+                className="h-8.5 rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground hover:bg-muted transition-colors"
+              >
+                Review & Edit
+              </button>
+              <button
+                type="button"
+                onClick={executeCreation}
+                disabled={busy}
+                className="h-8.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {busy ? "Creating…" : "Proceed & Create Anyway"}
+              </button>
+            </div>
           </div>
-        )}
+        </div>
+      )}
+
+      <div className="mt-6">
         <AdrForm
           form={form}
           setForm={setForm}

@@ -17,7 +17,7 @@ import {
   ArrowLeft, Edit, Send, ThumbsUp, MessageSquare, GitCommit,
   GitBranch, Link as LinkIcon, X, Plus, Book, ChevronDown, ChevronRight, ChevronLeft,
   Eye, Rocket, ExternalLink, Trash2, UserCheck, CheckCircle2, Check, AtSign,
-  History, Clock, FileEdit, Sparkles, ArrowRight, Hash, Shield, XCircle
+  History, Clock, FileEdit, Sparkles, ArrowRight, Hash, Shield, XCircle, AlertTriangle
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/adrs/$adrId")({
@@ -149,6 +149,34 @@ function AdrDetail() {
     (data?.approvals ?? []).some((a: any) => a.decision === "request_changes"),
   );
 
+  const requiredApprovals = adr?.projects?.required_approvals ?? 3;
+  const approvedCount = (data?.approvals ?? []).filter((a: any) => a.decision === "approve").length;
+  const rejectedCount = (data?.approvals ?? []).filter((a: any) => a.decision === "request_changes").length;
+  const userPersonallyRejected = myReviewDecision === "request_changes";
+  const isApproveOverride = approvedCount < requiredApprovals || rejectedCount > 0 || userPersonallyRejected;
+
+  function autoFillAdminRationale(decision: "approved" | "rejected") {
+    if (decision === "approved") {
+      if (isApproveOverride) {
+        const reasons: string[] = [];
+        if (approvedCount < requiredApprovals) reasons.push(`${approvedCount}/${requiredApprovals} required approvals`);
+        if (rejectedCount > 0) reasons.push(`${rejectedCount} existing rejection(s)`);
+        if (userPersonallyRejected) reasons.push("including my personal rejection");
+        setFinalComment(
+          `This project requires ${requiredApprovals} approvals. Current status: ${approvedCount} approval(s) and ${rejectedCount} rejection(s). Although standard review criteria were not satisfied (${reasons.join(", ")}), this ADR is being approved by Admin authority because: [state reason here]`
+        );
+      } else {
+        setFinalComment(
+          `This project requires ${requiredApprovals} approvals. Current status: ${approvedCount} approval(s) and 0 rejections. Approved by Admin authority.`
+        );
+      }
+    } else {
+      setFinalComment(
+        `This project requires ${requiredApprovals} approvals. Current status: ${approvedCount} approval(s) and ${rejectedCount} rejection(s). Rejected by Admin authority because: [state reason here]`
+      );
+    }
+  }
+
   async function handlePublish(publishAs?: "published" | "rejected") {
     setBusy("publish");
     try {
@@ -247,6 +275,10 @@ function AdrDetail() {
   }
 
   async function handleFinalDecision(decision: "approved" | "rejected") {
+    if (decision === "approved" && isApproveOverride && finalComment.trim().length < 15) {
+      toast.error("A detailed rationale comment (at least 15 characters) is mandatory when overriding review criteria or rejections.");
+      return;
+    }
     setBusy("final_decision");
     try {
       await finalDecisionFn({
@@ -523,11 +555,6 @@ function AdrDetail() {
                     Archived from repository
                   </span>
                 )}
-                {adr.current_version > 0 && (
-                  <span className="text-xs bg-muted/60 border border-border px-2 py-0.5 rounded-full font-mono text-muted-foreground">
-                    v{adr.current_version}
-                  </span>
-                )}
               </div>
 
               <h1 className="text-2xl font-bold tracking-tight text-foreground leading-snug">
@@ -634,35 +661,6 @@ function AdrDetail() {
           </Collapsible>
         )}
 
-        {/* Published Versions */}
-        {(data.publishedVersions ?? []).length > 0 && (
-          <Collapsible title={`Published Versions (${data.publishedVersions.length})`} icon={<Book className="h-4 w-4" />}>
-            <div className="space-y-2">
-              {data.publishedVersions.map((v: any) => (
-                <div key={v.id} className="flex items-center justify-between p-3 rounded-lg border border-border">
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono text-xs font-bold text-primary">v{v.version_number}</span>
-                    <div>
-                      <div className="text-xs text-muted-foreground">{new Date(v.published_at).toLocaleDateString()}</div>
-                      {v.git_commit_hash && (
-                        <div className="flex items-center gap-1 mt-0.5">
-                          <GitCommit className="h-2.5 w-2.5 text-muted-foreground" />
-                          <span className="font-mono text-[10px] text-muted-foreground">{v.git_commit_hash.slice(0, 7)}</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => { const blob = new Blob([v.markdown], {type:"text/markdown"}); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${adr.full_id}-v${v.version_number}.md`; a.click(); }}
-                    className="text-xs text-primary hover:underline"
-                  >
-                    Download .md
-                  </button>
-                </div>
-              ))}
-            </div>
-          </Collapsible>
-        )}
 
         {/* Activity & Edit Timeline */}
         <Collapsible
@@ -1021,7 +1019,7 @@ function AdrDetail() {
                       <span>Finalized Architectural Record</span>
                     </div>
                     <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      This ADR is finalized in Git ({adr.current_version ? `v${adr.current_version}` : "published"}). To change this decision, standard software engineering practice is to create a new ADR that supersedes this record.
+                      This ADR is finalized and committed to the Git repository. Because architectural decision records are immutable historical snapshots, changes are introduced by creating a new ADR that supersedes this record.
                     </p>
                   </div>
                   <Link
@@ -1134,36 +1132,94 @@ function AdrDetail() {
 
                   {/* 2. Admin Decision (Only Visible to Project Admins & Platform Admins) */}
                   {canPublish && (
-                    <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
-                      <div className="flex items-center gap-1.5">
-                        <Shield className="h-3.5 w-3.5 text-primary shrink-0" />
-                        <span className="text-[11px] font-semibold text-foreground tracking-wide">
-                          Admin Decision
-                        </span>
+                    <div className="space-y-2.5 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <Shield className="h-3.5 w-3.5 text-primary shrink-0" />
+                          <span className="text-[11px] font-semibold text-foreground tracking-wide">
+                            Admin Decision
+                          </span>
+                        </div>
+                        {isApproveOverride && (
+                          <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                            Override Active
+                          </span>
+                        )}
                       </div>
+
                       <div className="text-[11px] text-muted-foreground leading-snug">
-                        Authoritative project decision irrespective of team votes.
+                        Authoritative project decision. Overrides team review criteria.
                       </div>
-                      <textarea
-                        value={finalComment}
-                        onChange={(e) => setFinalComment(e.target.value)}
-                        rows={2}
-                        placeholder="Official administrative rationale…"
-                        className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
+
+                      {isApproveOverride && (
+                        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-700 dark:text-amber-300 space-y-1">
+                          <div className="font-semibold flex items-center gap-1">
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                            <span>Standard review criteria not met</span>
+                          </div>
+                          <p className="text-[10px] leading-relaxed opacity-90">
+                            Current: {approvedCount}/{requiredApprovals} approvals
+                            {rejectedCount > 0 ? `, ${rejectedCount} rejection(s)` : ""}
+                            {userPersonallyRejected ? " (including your personal rejection)" : ""}.
+                            A detailed rationale (min 15 chars) is mandatory to override.
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="space-y-1">
+                        <textarea
+                          value={finalComment}
+                          onChange={(e) => setFinalComment(e.target.value)}
+                          rows={3}
+                          placeholder={
+                            isApproveOverride
+                              ? "Mandatory rationale for overriding review criteria…"
+                              : "Official administrative rationale…"
+                          }
+                          className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                        />
+                        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                          <button
+                            type="button"
+                            onClick={() => autoFillAdminRationale("approved")}
+                            className="text-primary hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Sparkles className="h-3 w-3" /> Auto-draft rationale
+                          </button>
+                          {isApproveOverride && (
+                            <span
+                              className={
+                                finalComment.trim().length >= 15
+                                  ? "text-emerald-600 dark:text-emerald-400 font-mono font-medium"
+                                  : "text-amber-600 dark:text-amber-400 font-mono"
+                              }
+                            >
+                              {finalComment.trim().length}/15 chars min
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
                       <div className="grid grid-cols-2 gap-2">
                         <button
+                          type="button"
                           onClick={() => handleFinalDecision("approved")}
-                          disabled={busy === "final_decision"}
-                          className="h-8.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors"
+                          disabled={busy === "final_decision" || (isApproveOverride && finalComment.trim().length < 15)}
+                          title={
+                            isApproveOverride && finalComment.trim().length < 15
+                              ? "Provide at least 15 characters rationale explaining the override"
+                              : "Approve this ADR authoritatively"
+                          }
+                          className="h-8.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors cursor-pointer"
                         >
                           <CheckCircle2 className="h-3.5 w-3.5" />
                           Final Approve
                         </button>
                         <button
+                          type="button"
                           onClick={() => handleFinalDecision("rejected")}
                           disabled={busy === "final_decision"}
-                          className="h-8.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors"
+                          className="h-8.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1 shadow-2xs transition-colors cursor-pointer"
                         >
                           <X className="h-3.5 w-3.5" />
                           Final Reject
